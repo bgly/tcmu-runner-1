@@ -41,20 +41,19 @@ struct tcmulib_context {
 
 	struct nl_sock *nl_sock;
 
-	void (*err_print)(const char *fmt, ...);
-
 	unsigned reg_count_down;
 
 	GDBusConnection *connection;
 };
-
-#define tcmu_errp(ctx, fmt, ...) if ((ctx)->err_print) { (ctx)->err_print((fmt),##__VA_ARGS__);}
 
 struct tcmu_device {
 	int fd;
 	struct tcmu_mailbox *map;
 	size_t map_len;
 	uint32_t cmd_tail;
+
+	uint64_t num_lbas;
+	uint32_t block_size;
 
 	char dev_name[16]; /* e.g. "uio14" */
 	char tcm_hba_name[16]; /* e.g. "user_8" */

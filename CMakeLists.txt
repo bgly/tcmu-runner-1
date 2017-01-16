@@ -1,6 +1,6 @@
-cmake_minimum_required (VERSION 3.0 FATAL_ERROR)
-project (tcmu-runner VERSION 1.1.3 LANGUAGES C)
-
+cmake_minimum_required (VERSION 2.8 FATAL_ERROR)
+project (tcmu-runner C)
+set(VERSION 1.2.0)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -std=c99")
 
 include(GNUInstallDirs)
@@ -10,6 +10,7 @@ set(tcmu-runner_HANDLER_PATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/tc
 
 option(with-glfs "build Gluster glfs handler" true)
 option(with-qcow "build qcow handler" true)
+option(with-rbd "build Ceph rbd handler" true)
 
 find_library(LIBNL_LIB nl-3)
 find_library(LIBNL_GENL_LIB nl-genl-3)
@@ -39,6 +40,8 @@ add_library(tcmu
   libtcmu.c
   libtcmu-register.c
   tcmuhandler-generated.c
+  libtcmu_log.c
+  libtcmu_config.c
   )
 set_target_properties(tcmu
   PROPERTIES
@@ -61,6 +64,8 @@ add_library(tcmu_static
   libtcmu.c
   libtcmu-register.c
   tcmuhandler-generated.c
+  libtcmu_log.c
+  libtcmu_config.c
   )
 target_include_directories(tcmu_static
   PUBLIC ${LIBNL_INCLUDE_DIR}
@@ -143,11 +148,41 @@ set_target_properties(handler_file_async
   )
 target_link_libraries(handler_file_async ${PTHREAD})
 
+# Stuff for building the file optical handler
+add_library(handler_file_optical
+  SHARED
+  file_optical.c
+  )
+set_target_properties(handler_file_optical
+  PROPERTIES
+  PREFIX ""
+  )
+target_link_libraries(handler_file_optical ${PTHREAD})
+
+
 # The minimal library consumer
 add_executable(consumer
   consumer.c
   )
 target_link_libraries(consumer tcmu)
+
+if (with-rbd)
+	find_library(LIBRBD rbd)
+
+	# Stuff for building the rbd handler
+	add_library(handler_rbd
+	  SHARED
+	  rbd.c
+	  )
+	set_target_properties(handler_rbd
+	  PROPERTIES
+	  PREFIX ""
+	  )
+	target_link_libraries(handler_rbd
+	  ${LIBRBD}
+	  )
+	install(TARGETS handler_rbd DESTINATION ${CMAKE_INSTALL_LIBDIR}/tcmu-runner)
+endif (with-rbd)
 
 if (with-glfs)
 	find_library(GFAPI gfapi)
@@ -203,6 +238,8 @@ configure_file (
 
 install(FILES libtcmu.h libtcmu_common.h tcmu-runner.h
   DESTINATION include)
+install(FILES tcmu.conf
+  DESTINATION /etc/tcmu)
 install(FILES org.kernel.TCMUService1.service
   DESTINATION /usr/share/dbus-1/system-services)
 install(FILES tcmu-runner.conf DESTINATION /etc/dbus-1/system.d)
