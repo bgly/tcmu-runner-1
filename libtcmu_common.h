@@ -42,6 +42,10 @@ struct tcmulib_cmd {
 	uint8_t sense_buf[SENSE_BUFFERSIZE];
 };
 
+typedef ssize_t (*rw_fn)(struct tcmu_device *dev, struct iovec *iov,
+			 size_t iov_cnt, off_t off);
+typedef int (*flush_fn)(struct tcmu_device *dev);
+
 /* Set/Get methods for the opaque tcmu_device */
 void *tcmu_get_dev_private(struct tcmu_device *dev);
 void tcmu_set_dev_private(struct tcmu_device *dev, void *priv);
@@ -76,12 +80,9 @@ int tcmu_emulate_read_capacity_16(uint64_t num_lbas, uint32_t block_size, uint8_
 				  struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
 int tcmu_emulate_mode_sense(uint8_t *cdb, struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
 int tcmu_emulate_mode_select(uint8_t *cdb, struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
-int tcmu_emulate_write_verify(struct tcmu_device *, struct tcmulib_cmd *,
-			      ssize_t (*read)(struct tcmu_device *,
-					      struct iovec *, size_t, off_t),
-			      ssize_t (*write)(struct tcmu_device *,
-					       struct iovec *, size_t, off_t),
-			      struct iovec *, size_t, off_t);
+int tcmu_emulate_write_verify(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+			      rw_fn read, rw_fn write, struct iovec *iov,
+			      size_t iov_cnt, off_t off);
 
 #ifdef __cplusplus
 }

@@ -908,10 +908,7 @@ int tcmu_emulate_start_stop(struct tcmu_device *dev, uint8_t *cdb,
 
 int tcmu_emulate_write_verify(struct tcmu_device *dev,
 			      struct tcmulib_cmd *tcmulib_cmd,
-			      ssize_t (*read)(struct tcmu_device *,
-					      struct iovec *, size_t, off_t),
-			      ssize_t (*write)(struct tcmu_device *,
-					       struct iovec *, size_t, off_t),
+			      rw_fn read, rw_fn write,
 			      struct iovec *iovec,
 			      size_t iov_cnt,
 			      off_t offset)
