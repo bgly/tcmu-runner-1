@@ -266,6 +266,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 	struct iovec iov;
 	size_t half = l / 2;
 	uint32_t cmp_offset;
+	bool immed = false;
 
 	if (store->handle_cmd)
 		ret = store->handle_cmd(dev, tcmulib_cmd);
@@ -350,12 +351,22 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 			return SAM_STAT_GOOD;
 	case SYNCHRONIZE_CACHE:
 	case SYNCHRONIZE_CACHE_16:
+		if (cdb[1] & 0x02) {
+			immed = true;
+			tcmulib_command_complete(dev, tcmulib_cmd,
+						 SAM_STAT_GOOD);
+			tcmulib_cmd = NULL;
+		}
+
 		ret = store->flush(dev, tcmulib_cmd);
-		if (ret < 0) {
+		if (ret < 0 && tcmulib_cmd) {
 			tcmu_err("Error on flush %x\n", ret);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
 						   ASC_WRITE_ERROR, NULL);
-		} else
+		}
+		if (immed)
+			return TCMU_ASYNC_HANDLED;
+		else
 			return SAM_STAT_GOOD;
 	case COMPARE_AND_WRITE:
 		ret = check_cmd_lba_and_length(dev, tcmulib_cmd, cdb[13] * 2);
@@ -546,7 +557,8 @@ static void *io_work_queue(void *arg)
 		tcmulib_track_aio_request_start(dev);
 
 		ret = invokecmd(dev, io_entry->cmd);
-		tcmulib_command_complete(dev, io_entry->cmd, ret);
+		if (ret != TCMU_ASYNC_HANDLED)
+			tcmulib_command_complete(dev, io_entry->cmd, ret);
 
 		pthread_cleanup_pop(1); /* untrack aio */
 		free(io_entry);
