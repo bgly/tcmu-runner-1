@@ -230,6 +230,7 @@ struct tcmur_handler tcmu_rbd_handler = {
 	.read		= tcmu_rbd_read,
 	.write		= tcmu_rbd_write,
 	.flush		= tcmu_rbd_flush,
+	.nr_threads	= 1,
 };
 
 int handler_init(void)

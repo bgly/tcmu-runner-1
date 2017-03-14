@@ -62,7 +62,7 @@ struct tcmu_io_queue {
 	pthread_mutex_t io_lock;
 	pthread_cond_t io_cond;
 
-	pthread_t io_wq_thread;
+	pthread_t *io_wq_threads;
 	struct list_head io_queue;
 };
 

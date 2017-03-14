@@ -60,8 +60,8 @@ struct tcmur_handler {
 	int (*open)(struct tcmu_device *dev);
 	void (*close)(struct tcmu_device *dev);
 
-	/* device supports asynchronous IO */
-	bool aio_supported;
+	/* if 0 device supports async IO */
+	int nr_threads;
 
 	/*
 	 * Returns

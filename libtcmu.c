@@ -596,10 +596,33 @@ static int aio_schedule(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	return TCMU_ASYNC_HANDLED;
 }
 
+static void cleanup_io_work_queue_threads(struct tcmu_device *dev)
+{
+	struct tcmulib_handler *handler = tcmu_get_dev_handler(dev);
+	struct tcmur_handler *r_handler = handler->hm_private;
+	struct tcmu_io_queue *io_wq = &dev->work_queue;
+	int i, nr_threads = r_handler->nr_threads;
+
+	if (!io_wq->io_wq_threads) {
+		return;
+	}
+
+	for (i = 0; i < nr_threads; i++) {
+		if (io_wq->io_wq_threads[i]) {
+			cancel_thread(io_wq->io_wq_threads[i]);
+		}
+	}
+}
+
 static int setup_io_work_queue(struct tcmu_device *dev)
 {
-	int ret;
+	struct tcmulib_handler *handler = tcmu_get_dev_handler(dev);
+	struct tcmur_handler *r_handler = handler->hm_private;
 	struct tcmu_io_queue *io_wq = &dev->work_queue;
+	int ret, i, nr_threads = r_handler->nr_threads;
+
+	if (!nr_threads)
+		return 0;
 
 	list_head_init(&io_wq->io_queue);
 
@@ -612,14 +635,24 @@ static int setup_io_work_queue(struct tcmu_device *dev)
 		goto cleanup_lock;
 	}
 
-	// TODO: >1 worker threads (per device via config)
-	ret = pthread_create(&io_wq->io_wq_thread, NULL, io_work_queue, dev);
-	if (ret < 0) {
+	/* TODO: Allow user to override device defaults */
+	io_wq->io_wq_threads = calloc(nr_threads, sizeof(pthread_t));
+	if (!io_wq->io_wq_threads)
 		goto cleanup_cond;
+
+	for (i = 0; i < nr_threads; i++) {
+		ret = pthread_create(&io_wq->io_wq_threads[i], NULL,
+				      io_work_queue, dev);
+		if (ret < 0) {
+			goto cleanup_threads;
+		}
 	}
 
 	return 0;
 
+cleanup_threads:
+	cleanup_io_work_queue_threads(dev);
+	free(io_wq->io_wq_threads);
 cleanup_cond:
 	pthread_cond_destroy(&io_wq->io_cond);
 cleanup_lock:
@@ -631,11 +664,15 @@ out:
 static void cleanup_io_work_queue(struct tcmu_device *dev,
 				  bool cancel)
 {
-	int ret;
 	struct tcmu_io_queue *io_wq = &dev->work_queue;
+	int ret;
+
+	if (!io_wq->io_wq_threads) {
+		return;
+	}
 
 	if (cancel) {
-		cancel_thread(io_wq->io_wq_thread);
+		cleanup_io_work_queue_threads(dev);
 	}
 
 	/*
@@ -656,6 +693,8 @@ static void cleanup_io_work_queue(struct tcmu_device *dev,
 	if (ret != 0) {
 		tcmu_err("failed to destroy io workqueue cond\n");
 	}
+
+	free(io_wq->io_wq_threads);
 }
 
 static int setup_aio_tracking(struct tcmu_device *dev)
@@ -692,7 +731,7 @@ static void async_call_command(struct tcmu_device *dev,
 	struct tcmulib_handler *handler = tcmu_get_dev_handler(dev);
 	struct tcmur_handler *r_handler = handler->hm_private;
 
-	if (r_handler->aio_supported) {
+	if (!r_handler->nr_threads) {
 		ret = invokecmd(dev, cmd);
 	} else {
 		ret = aio_schedule(dev, cmd);
@@ -930,7 +969,6 @@ static void remove_device(struct tcmulib_context *ctx,
 	struct tcmu_device *dev;
 	int i = 0, ret;
 	bool found = false;
-	struct tcmu_io_queue *io_wq;
 
 	darray_foreach(dev_ptr, ctx->devices) {
 		dev = *dev_ptr;
@@ -950,8 +988,6 @@ static void remove_device(struct tcmulib_context *ctx,
 
 	darray_remove(ctx->devices, i);
 
-	io_wq = &dev->work_queue;
-
 	/*
 	 * The order of cleaning up worker threads and calling ->removed()
 	 * is important: for sync handlers, the worker thread needs to be
@@ -959,7 +995,7 @@ static void remove_device(struct tcmulib_context *ctx,
 	 * ->close() callout) in order to ensure that no store callouts
 	 * are getting invoked when shutting down the handler.
 	 */
-	cancel_thread(io_wq->io_wq_thread);
+	cleanup_io_work_queue_threads(dev);
 	dev->handler->removed(dev);
 	cleanup_io_work_queue(dev, false);
 	cleanup_aio_tracking(dev);
