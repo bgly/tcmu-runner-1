@@ -927,7 +927,7 @@ int tcmu_emulate_write_verify(struct tcmu_device *dev,
 		if (ret < 0) {
 			tcmu_err("write failed\n");
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
-						   ASC_READ_ERROR, NULL);
+						   ASC_WRITE_ERROR, NULL);
 		}
 		len = ret;
 		iov.iov_base = malloc(len);

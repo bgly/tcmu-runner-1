@@ -345,7 +345,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		if (ret != l) {
 			tcmu_err("Error on write %x, %x\n", ret, l);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
-						   ASC_READ_ERROR, NULL);
+						   ASC_WRITE_ERROR, NULL);
 		} else
 			return SAM_STAT_GOOD;
 	case SYNCHRONIZE_CACHE:
@@ -354,7 +354,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		if (ret < 0) {
 			tcmu_err("Error on flush %x\n", ret);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
-						   ASC_READ_ERROR, NULL);
+						   ASC_WRITE_ERROR, NULL);
 		} else
 			return SAM_STAT_GOOD;
 	case COMPARE_AND_WRITE:
@@ -388,7 +388,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		if (ret != half) {
 			tcmu_err("Error on write %x, %x\n", ret, half);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
-						   ASC_READ_ERROR, NULL);
+						   ASC_WRITE_ERROR, NULL);
 		} else
 			return SAM_STAT_GOOD;
 	default:
