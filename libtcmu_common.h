@@ -42,9 +42,10 @@ struct tcmulib_cmd {
 	uint8_t sense_buf[SENSE_BUFFERSIZE];
 };
 
-typedef ssize_t (*rw_fn)(struct tcmu_device *dev, struct iovec *iov,
-			 size_t iov_cnt, size_t length, off_t off);
-typedef int (*flush_fn)(struct tcmu_device *dev);
+typedef ssize_t (*rw_fn)(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+			 struct iovec *iov, size_t iov_cnt, size_t length,
+			 off_t off);
+typedef int (*flush_fn)(struct tcmu_device *dev, struct tcmulib_cmd *cmd);
 
 /* Set/Get methods for the opaque tcmu_device */
 void *tcmu_get_dev_private(struct tcmu_device *dev);

@@ -1463,8 +1463,9 @@ static void qcow_close(struct tcmu_device *dev)
 	free(bdev);
 }
 
-static ssize_t qcow_read(struct tcmu_device *dev, struct iovec *iovec,
-			 size_t iov_cnt, size_t length, off_t offset)
+static ssize_t qcow_read(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+			 struct iovec *iovec, size_t iov_cnt, size_t length,
+			 off_t offset)
 {
 	struct bdev *bdev = tcmu_get_dev_private(dev);
 	size_t remaining = length;
@@ -1484,8 +1485,9 @@ static ssize_t qcow_read(struct tcmu_device *dev, struct iovec *iovec,
 }
 
 
-static ssize_t qcow_write(struct tcmu_device *dev, struct iovec *iovec,
-			  size_t iov_cnt, size_t length, off_t offset)
+static ssize_t qcow_write(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+			  struct iovec *iovec, size_t iov_cnt, size_t length,
+			  off_t offset)
 {
 	struct bdev *bdev = tcmu_get_dev_private(dev);
 	size_t remaining = length;
