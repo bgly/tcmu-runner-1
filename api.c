@@ -923,13 +923,13 @@ int tcmu_emulate_write_verify(struct tcmu_device *dev,
 	int ret;
 
 	while (remaining) {
-		ret = write(dev, iovec, iov_cnt, offset);
+		ret = write(dev, iovec, iov_cnt, remaining, offset);
 		if (ret < 0) {
 			tcmu_err("write failed\n");
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
 						   ASC_READ_ERROR, NULL);
 		}
-		len = tcmu_iovec_length(iovec, iov_cnt);
+		len = ret;
 		iov.iov_base = malloc(len);
 		if (!iov.iov_base) {
 			tcmu_err("out of memory\n");
@@ -940,7 +940,7 @@ int tcmu_emulate_write_verify(struct tcmu_device *dev,
 
 		iov.iov_len = len;
 
-		ret = read(dev, &iov, iov_cnt, offset);
+		ret = read(dev, &iov, iov_cnt, len, offset);
 		if (ret != len) {
 			tcmu_err("read failed\n");
 			free(iov.iov_base);

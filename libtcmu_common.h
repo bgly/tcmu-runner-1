@@ -43,7 +43,7 @@ struct tcmulib_cmd {
 };
 
 typedef ssize_t (*rw_fn)(struct tcmu_device *dev, struct iovec *iov,
-			 size_t iov_cnt, off_t off);
+			 size_t iov_cnt, size_t length, off_t off);
 typedef int (*flush_fn)(struct tcmu_device *dev);
 
 /* Set/Get methods for the opaque tcmu_device */

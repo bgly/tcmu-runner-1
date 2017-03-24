@@ -160,10 +160,9 @@ static void tcmu_rbd_close(struct tcmu_device *dev)
 }
 
 static ssize_t tcmu_rbd_read(struct tcmu_device *dev, struct iovec *iov,
-			     size_t iov_cnt, off_t offset)
+			     size_t iov_cnt, size_t length, off_t offset)
 {
 	struct tcmu_rbd_state *state = tcmu_get_dev_private(dev);
-	size_t length = tcmu_iovec_length(iov, iov_cnt);
 	void *buf = malloc(length);
 	ssize_t ret = -ENOMEM;
 
@@ -180,10 +179,9 @@ out:
 }
 
 static ssize_t tcmu_rbd_write(struct tcmu_device *dev, struct iovec *iov,
-			      size_t iov_cnt, off_t offset)
+			      size_t iov_cnt, size_t length, off_t offset)
 {
 	struct tcmu_rbd_state *state = tcmu_get_dev_private(dev);
-	size_t length = tcmu_iovec_length(iov, iov_cnt);
 	void *buf = malloc(length);
 	ssize_t ret = -ENOMEM;
 

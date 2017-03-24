@@ -315,7 +315,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		if (ret)
 			return ret;
 
-		ret = store->read(dev, iovec, iov_cnt, offset);
+		ret = store->read(dev, iovec, iov_cnt, l, offset);
 		if (ret != l) {
 			tcmu_err("Error on read %x, %x\n", ret, l);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
@@ -341,7 +341,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		if (ret)
 			return ret;
 
-		ret = store->write(dev, iovec, iov_cnt, offset);
+		ret = store->write(dev, iovec, iov_cnt, l, offset);
 		if (ret != l) {
 			tcmu_err("Error on write %x, %x\n", ret, l);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
@@ -369,7 +369,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 						   ASC_READ_ERROR, NULL);
 		}
 		iov.iov_len = half;
-		ret = store->read(dev, &iov, 1, offset);
+		ret = store->read(dev, &iov, 1, half, offset);
 		if (ret != l) {
 			tcmu_err("Error on read %x, %x\n", ret, l);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
@@ -384,7 +384,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		free(iov.iov_base);
 
 		tcmu_seek_in_iovec(iovec, half);
-		ret = store->write(dev, iovec, iov_cnt, offset);
+		ret = store->write(dev, iovec, iov_cnt, half, offset);
 		if (ret != half) {
 			tcmu_err("Error on write %x, %x\n", ret, half);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
