@@ -26,6 +26,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <dirent.h>
+#include <inttypes.h>
 #include <scsi/scsi.h>
 
 #include <linux/target_core_user.h>
@@ -224,6 +225,30 @@ static void cmdproc_thread_cleanup(void *arg)
 	r_handler->close(dev);
 }
 
+static int check_cmd_lba_and_length(struct tcmu_device *dev,
+				    struct tcmulib_cmd *cmd,
+				    uint32_t sectors)
+{
+	uint8_t *cdb = cmd->cdb;
+	uint64_t lba = tcmu_get_lba(cdb);
+	uint64_t num_lbas = tcmu_get_dev_num_lbas(dev);
+	size_t iov_length = tcmu_iovec_length(cmd->iovec, cmd->iov_cnt);
+
+	if (iov_length != sectors * tcmu_get_dev_block_size(dev)) {
+		tcmu_err("iov len mismatch: iov len %zu, xfer len %" PRIu32 ", block size %" PRIu32 "\n",
+			 iov_length, sectors, tcmu_get_dev_block_size(dev));
+
+		return tcmu_set_sense_data(cmd->sense_buf, HARDWARE_ERROR,
+					   ASC_INTERNAL_TARGET_FAILURE, NULL);
+	}
+
+	if (lba >= num_lbas || lba + sectors > num_lbas)
+		return tcmu_set_sense_data(cmd->sense_buf, ILLEGAL_REQUEST,
+					   ASC_LBA_OUT_OF_RANGE, NULL);
+
+	return SAM_STAT_GOOD;
+}
+
 static int generic_handle_cmd(struct tcmu_device *dev,
 			      struct tcmulib_cmd *tcmulib_cmd)
 {
@@ -285,6 +310,11 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 	case READ_10:
 	case READ_12:
 	case READ_16:
+		ret = check_cmd_lba_and_length(dev, tcmulib_cmd,
+					       tcmu_get_xfer_length(cdb));
+		if (ret)
+			return ret;
+
 		ret = store->read(dev, iovec, iov_cnt, offset);
 		if (ret != l) {
 			tcmu_err("Error on read %x, %x\n", ret, l);
@@ -293,6 +323,11 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		} else
 			return SAM_STAT_GOOD;
 	case WRITE_VERIFY:
+		ret = check_cmd_lba_and_length(dev, tcmulib_cmd,
+					       tcmu_get_xfer_length(cdb));
+		if (ret)
+			return ret;
+
 		return tcmu_emulate_write_verify(dev, tcmulib_cmd,
 						 store->read,
 						 store->write,
@@ -301,6 +336,11 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 	case WRITE_10:
 	case WRITE_12:
 	case WRITE_16:
+		ret = check_cmd_lba_and_length(dev, tcmulib_cmd,
+					       tcmu_get_xfer_length(cdb));
+		if (ret)
+			return ret;
+
 		ret = store->write(dev, iovec, iov_cnt, offset);
 		if (ret != l) {
 			tcmu_err("Error on write %x, %x\n", ret, l);
@@ -318,6 +358,10 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		} else
 			return SAM_STAT_GOOD;
 	case COMPARE_AND_WRITE:
+		ret = check_cmd_lba_and_length(dev, tcmulib_cmd, cdb[13] * 2);
+		if (ret)
+			return ret;
+
 		iov.iov_base = malloc(half);
 		if (!iov.iov_base) {
 			tcmu_err("out of memory\n");
