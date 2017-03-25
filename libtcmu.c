@@ -267,6 +267,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 	size_t half = l / 2;
 	uint32_t cmp_offset;
 	bool immed = false;
+	void *cmp_buf;
 
 	if (store->handle_cmd)
 		ret = store->handle_cmd(dev, tcmulib_cmd);
@@ -373,7 +374,7 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		if (ret)
 			return ret;
 
-		iov.iov_base = malloc(half);
+		iov.iov_base = cmp_buf = malloc(half);
 		if (!iov.iov_base) {
 			tcmu_err("out of memory\n");
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
@@ -381,18 +382,19 @@ static int generic_handle_cmd(struct tcmu_device *dev,
 		}
 		iov.iov_len = half;
 		ret = store->read(dev, tcmulib_cmd, &iov, 1, half, offset);
-		if (ret != l) {
+		if (ret != half) {
+			free(cmp_buf);
 			tcmu_err("Error on read %x, %x\n", ret, l);
 			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
 						   ASC_READ_ERROR, NULL);
 		}
-		cmp_offset = tcmu_compare_with_iovec(iov.iov_base, iovec, half);
+		cmp_offset = tcmu_compare_with_iovec(cmp_buf, iovec, half);
+		free(cmp_buf);
 		if (cmp_offset != -1) {
 			return tcmu_set_sense_data(sense, MISCOMPARE,
 					ASC_MISCOMPARE_DURING_VERIFY_OPERATION,
 					&cmp_offset);
 		}
-		free(iov.iov_base);
 
 		tcmu_seek_in_iovec(iovec, half);
 		ret = store->write(dev, tcmulib_cmd, iovec, iov_cnt, half,
