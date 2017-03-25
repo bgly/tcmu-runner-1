@@ -913,51 +913,52 @@ int tcmu_emulate_write_verify(struct tcmu_device *dev,
 			      size_t iov_cnt,
 			      off_t offset)
 {
-	struct iovec iov;
+	struct iovec write_iovec[iov_cnt];
+	struct iovec read_iov;
 	uint32_t cmp_offset;
 	uint8_t *sense = tcmulib_cmd->sense_buf;
 	uint8_t *cdb = tcmulib_cmd->cdb;
 	size_t length = tcmu_get_xfer_length(cdb) * tcmu_get_dev_block_size(dev);
-	size_t remaining = length;
-	int len;
+	void *read_buf;
 	int ret;
 
-	while (remaining) {
-		ret = write(dev, tcmulib_cmd, iovec, iov_cnt, remaining, offset);
-		if (ret < 0) {
-			tcmu_err("write failed\n");
-			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
-						   ASC_WRITE_ERROR, NULL);
-		}
-		len = ret;
-		iov.iov_base = malloc(len);
-		if (!iov.iov_base) {
-			tcmu_err("out of memory\n");
-			return tcmu_set_sense_data(sense, HARDWARE_ERROR,
-						   ASC_INTERNAL_TARGET_FAILURE,
-						   NULL);
-		}
+	/*
+	 * Use a tmp iovec because handlers will update the iovec when
+	 * they seek or copy from a iovec to perform the write.
+	 */
+	*write_iovec = *iovec;
 
-		iov.iov_len = len;
-
-		ret = read(dev, tcmulib_cmd, &iov, iov_cnt, len, offset);
-		if (ret != len) {
-			tcmu_err("read failed\n");
-			free(iov.iov_base);
-			return tcmu_set_sense_data(sense, MEDIUM_ERROR,
-						   ASC_READ_ERROR, NULL);
-		}
-		cmp_offset = tcmu_compare_with_iovec(iov.iov_base, iovec, len);
-		free(iov.iov_base);
-		if (cmp_offset != -1) {
-			tcmu_err("Verify failed at offset %lu\n", cmp_offset);
-			return tcmu_set_sense_data(sense, MISCOMPARE,
-					ASC_MISCOMPARE_DURING_VERIFY_OPERATION,
-					&cmp_offset);
-		}
-
-		tcmu_seek_in_iovec(iovec, ret);
-		remaining -= ret;
+	ret = write(dev, tcmulib_cmd, write_iovec, iov_cnt, length, offset);
+	if (ret != length) {
+		tcmu_err("write failed\n");
+		return tcmu_set_sense_data(sense, MEDIUM_ERROR,
+					   ASC_WRITE_ERROR, NULL);
 	}
+
+	read_iov.iov_base = read_buf = malloc(length);
+	if (!read_buf) {
+		tcmu_err("out of memory\n");
+		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
+					   ASC_INTERNAL_TARGET_FAILURE, NULL);
+	}
+	read_iov.iov_len = length;
+
+	ret = read(dev, tcmulib_cmd, &read_iov, iov_cnt, length, offset);
+	if (ret != length) {
+		tcmu_err("read failed\n");
+		free(read_buf);
+		return tcmu_set_sense_data(sense, MEDIUM_ERROR,
+					   ASC_READ_ERROR, NULL);
+	}
+
+	cmp_offset = tcmu_compare_with_iovec(read_buf, iovec, length);
+	free(read_buf);
+	if (cmp_offset != -1) {
+		tcmu_err("Verify failed at offset %lu\n", cmp_offset);
+		return tcmu_set_sense_data(sense, MISCOMPARE,
+				ASC_MISCOMPARE_DURING_VERIFY_OPERATION,
+				&cmp_offset);
+	}
+
 	return SAM_STAT_GOOD;
 }
