@@ -1164,6 +1164,7 @@ static int fbo_read(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec,
 	uint64_t cur_lba = 0;
 	uint64_t offset;
 	int length = 0;
+	int remaining;
 	size_t ret;
 	int rc;
 
@@ -1192,16 +1193,22 @@ static int fbo_read(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec,
 	state->flags |= FBO_DEV_IO;
 	pthread_mutex_unlock(&state->state_mtx);
 
-	ret = preadv(state->fd, iovec, iov_cnt, offset);
+	remaining = length;
+
+	while (remaining) {
+		ret = preadv(state->fd, iovec, iov_cnt, offset);
+		if (ret < 0) {
+			tcmu_err("read failed: %m\n");
+			return set_medium_error(sense, ASC_READ_ERROR);
+		}
+		tcmu_seek_in_iovec(iovec, ret);
+		offset += ret;
+		remaining -= ret;
+	}
 
 	pthread_mutex_lock(&state->state_mtx);
 	state->flags &= ~FBO_DEV_IO;
 	pthread_mutex_unlock(&state->state_mtx);
-
-	if (ret == -1) {
-		tcmu_err("read failed: %m\n");
-		return set_medium_error(sense, ASC_READ_ERROR);
-	}
 
 	return SAM_STAT_GOOD;
 }
@@ -1212,14 +1219,17 @@ static void fbo_cleanup_buffer(void *buf)
 }
 
 static int fbo_do_verify(struct fbo_state *state, struct iovec *iovec,
-			 uint64_t offset, int length, uint8_t *sense)
+			 size_t iov_cnt, uint64_t offset, int length,
+			 uint8_t *sense)
 {
+	struct iovec read_iov;
 	size_t ret;
 	uint32_t cmp_offset;
 	void *buf;
 	int rc = SAM_STAT_GOOD;
+	int remaining;
 
-	buf = malloc(length);
+	read_iov.iov_base = buf = malloc(length);
 	if (!buf)
 		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
 					   ASC_INTERNAL_TARGET_FAILURE, NULL);
@@ -1227,23 +1237,31 @@ static int fbo_do_verify(struct fbo_state *state, struct iovec *iovec,
 	pthread_cleanup_push(fbo_cleanup_buffer, buf);
 	memset(buf, 0, length);
 
+	read_iov.iov_len = length;
+
 	pthread_mutex_lock(&state->state_mtx);
 	state->cur_lba = offset / state->block_size;
 	state->flags |= FBO_DEV_IO;
 	pthread_mutex_unlock(&state->state_mtx);
 
-	ret = pread(state->fd, buf, length, offset);
+	remaining = length;
+
+	while (remaining) {
+		ret = preadv(state->fd, &read_iov, iov_cnt, offset);
+		if (ret < 0) {
+			tcmu_err("read failed: %m\n");
+			free(buf);
+			rc = set_medium_error(sense, ASC_READ_ERROR);
+			goto cleanup;
+		}
+		tcmu_seek_in_iovec(&read_iov, ret);
+		offset += ret;
+		remaining -= ret;
+	}
 
 	pthread_mutex_lock(&state->state_mtx);
 	state->flags &= ~FBO_DEV_IO;
 	pthread_mutex_unlock(&state->state_mtx);
-
-	if (ret == -1) {
-		tcmu_err("read failed: %m\n");
-		free(buf);
-		rc = set_medium_error(sense, ASC_READ_ERROR);
-		goto cleanup;
-	}
 
 	cmp_offset = tcmu_compare_with_iovec(buf, iovec, length);
 	if (cmp_offset != -1)
@@ -1253,7 +1271,7 @@ static int fbo_do_verify(struct fbo_state *state, struct iovec *iovec,
 
 cleanup:
 	free(buf);
-	 pthread_cleanup_pop(0);
+	pthread_cleanup_pop(0);
 
 	return rc;
 }
@@ -1262,6 +1280,7 @@ static int fbo_write(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec,
 		     size_t iov_cnt, uint8_t *sense, bool do_verify)
 {
 	struct fbo_state *state = tcmu_get_dev_private(dev);
+	struct iovec write_iovec[iov_cnt];
 	uint8_t fua = cdb[1] & 0x08;
 	uint64_t cur_lba = 0;
 	uint64_t offset;
@@ -1290,13 +1309,15 @@ static int fbo_write(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec,
 
 	remaining = length;
 
+	*write_iovec = *iovec;
+
 	while (remaining) {
-		ret = pwritev(state->fd, iovec, iov_cnt, offset);
+		ret = pwritev(state->fd, write_iovec, iov_cnt, offset);
 		if (ret < 0) {
 			tcmu_err("write failed: %m\n");
 			rc = set_medium_error(sense, ASC_WRITE_ERROR);
 		}
-		tcmu_seek_in_iovec(iovec, ret);
+		tcmu_seek_in_iovec(write_iovec, ret);
 		offset += ret;
 		remaining -= ret;
 	}
@@ -1316,7 +1337,7 @@ static int fbo_write(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec,
 	if (!do_verify || rc != SAM_STAT_GOOD)
 		return rc;
 
-	return fbo_do_verify(state, iovec, offset, length, sense);
+	return fbo_do_verify(state, iovec, iov_cnt, offset, length, sense);
 }
 
 static int fbo_verify(struct tcmu_device *dev, uint8_t *cdb,
@@ -1345,7 +1366,7 @@ static int fbo_verify(struct tcmu_device *dev, uint8_t *cdb,
 
 	offset = state->block_size * cur_lba;
 
-	return fbo_do_verify(state, iovec, offset, length, sense);
+	return fbo_do_verify(state, iovec, iov_cnt, offset, length, sense);
 }
 
 static int fbo_do_format(struct tcmu_device *dev, uint8_t *sense)
