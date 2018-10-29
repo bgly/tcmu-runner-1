@@ -1,18 +1,10 @@
 /*
- * Copyright 2014, Red Hat, Inc.
+ * Copyright (c) 2014 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
-*/
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
+ */
 
 /*
  * This header defines the interface between tcmu-runner and its loadable
@@ -118,9 +110,9 @@ struct tcmur_handler {
 	unmap_fn_t unmap;
 
 	/*
-	 * If the lock is acquired and the tag is non-NULL, it must be
-	 * associated with the lock and returned by get_lock_tag on local
-	 * and remote nodes. When unlock is successful, the tag
+	 * If the lock is acquired and the tag is not TCMU_INVALID_LOCK_TAG,
+	 * it must be associated with the lock and returned by get_lock_tag on
+	 * local and remote nodes. When unlock is successful, the tag
 	 * associated with the lock must be deleted.
 	 *
 	 * Returns a TCMU_STS indicating success/failure.
@@ -133,6 +125,11 @@ struct tcmur_handler {
 	 * indicating success/failure.
 	 */
 	int (*get_lock_tag)(struct tcmu_device *dev, uint16_t *tag);
+
+	/*
+	 * Must return TCMUR_DEV_LOCK state value.
+	 */
+	int (*get_lock_state)(struct tcmu_device *dev);
 
 	/*
 	 * internal field, don't touch this

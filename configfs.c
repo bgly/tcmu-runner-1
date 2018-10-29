@@ -1,18 +1,10 @@
 /*
- * Copyright 2017, Red Hat, Inc.
+ * Copyright (c) 2017 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
-*/
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
+ */
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -78,6 +70,93 @@ int tcmu_set_control(struct tcmu_device *dev, const char *key, unsigned long val
 	snprintf(buf, sizeof(buf), "%s=%lu", key, val);
 
 	return tcmu_set_cfgfs_str(path, buf, strlen(buf) + 1);
+}
+
+static bool tcmu_cfgfs_mod_param_is_supported(const char *name)
+{
+	char path[PATH_MAX];
+
+	snprintf(path, sizeof(path), CFGFS_MOD_PARAM"/%s", name);
+
+	if (access(path, F_OK) == -1)
+		return false;
+
+	return true;
+}
+
+void tcmu_block_netlink(void)
+{
+	char path[PATH_MAX];
+	int rc;
+
+	if (!tcmu_cfgfs_mod_param_is_supported("block_netlink")) {
+		tcmu_warn("Kernel does not support blocking netlink.\n");
+		return;
+	}
+
+	snprintf(path, sizeof(path), CFGFS_MOD_PARAM"/block_netlink");
+
+	tcmu_dbg("blocking netlink\n");
+	rc = tcmu_set_cfgfs_ul(path, 1);
+	if (rc) {
+		tcmu_warn("Could not block netlink %d.\n", rc);
+		return;
+	}
+	tcmu_dbg("block netlink done\n");
+}
+
+void tcmu_unblock_netlink(void)
+{
+	char path[PATH_MAX];
+	int rc;
+
+	if (!tcmu_cfgfs_mod_param_is_supported("block_netlink")) {
+		tcmu_warn("Kernel does not support unblocking netlink.\n");
+		return;
+	}
+
+	snprintf(path, sizeof(path), CFGFS_MOD_PARAM"/block_netlink");
+
+	tcmu_dbg("unblocking netlink\n");
+	rc = tcmu_set_cfgfs_ul(path, 0);
+	if (rc) {
+		tcmu_warn("Could not unblock netlink %d.\n", rc);
+		return;
+	}
+	tcmu_dbg("unblock netlink done\n");
+}
+
+/*
+ * Usually this will be used when the daemon is starting just before
+ * it could receive and handle the kernel netlink requests.
+ *
+ * It will reset all the pending netlink msg, of which the reply maybe
+ * lost for some reason, such as the userspace dameon crashed just before
+ * it could reply to it, in kernel space.
+ *
+ * This must be called after blocking the netlink, and after this unblocking
+ * is a must.
+ */
+void tcmu_reset_netlink(void)
+{
+	char path[PATH_MAX];
+	int rc;
+
+	if (!tcmu_cfgfs_mod_param_is_supported("reset_netlink")) {
+		tcmu_warn("Kernel does not support reseting netlink.\n");
+		return;
+	}
+
+	snprintf(path, sizeof(path), CFGFS_MOD_PARAM"/reset_netlink");
+
+	tcmu_dbg("reseting netlink\n");
+	rc = tcmu_set_cfgfs_ul(path, 1);
+	if (rc) {
+		tcmu_warn("Could not reset netlink: %d\n", rc);
+		return;
+	}
+
+	tcmu_dbg("reset netlink done\n");
 }
 
 /*

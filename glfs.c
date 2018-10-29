@@ -1,18 +1,10 @@
 /*
- * Copyright 2015, Red Hat, Inc.
+ * Copyright (c) 2015 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
-*/
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
+ */
 
 #define _GNU_SOURCE
 
@@ -39,7 +31,7 @@
 
 #define GLUSTER_PORT "24007"
 #define TCMU_GLFS_LOG_FILENAME "tcmu-runner-glfs.log"  /* MAX 32 CHAR */
-#define TCMU_GLFS_DEBUG_LEVEL  4
+#define TCMU_GLFS_DEBUG_LEVEL  7
 
 /* cache protection */
 pthread_mutex_t glfs_lock;
@@ -93,7 +85,8 @@ typedef struct glfs_cbk_cookie {
 	enum {
 		TCMU_GLFS_READ  = 1,
 		TCMU_GLFS_WRITE = 2,
-		TCMU_GLFS_FLUSH = 3
+		TCMU_GLFS_FLUSH = 3,
+		TCMU_GLFS_DISCARD = 4
 	} op;
 } glfs_cbk_cookie;
 
@@ -197,7 +190,7 @@ free_entry:
 	if (entry->volname)
 		free(entry->volname);
 	free(entry);
- error:
+error:
 	return -1;
 }
 
@@ -308,7 +301,7 @@ static int gluster_cache_query_or_add(struct tcmu_device *dev,
 		goto out;
 	}
 
- out:
+out:
 	pthread_mutex_unlock(&glfs_lock);
 	pthread_cleanup_pop(0);
 
@@ -350,12 +343,12 @@ static int parse_imagepath(char *cfgstring, gluster_server **hosts)
 
 	*hosts = calloc(1, sizeof(gluster_server));
 	if (!hosts)
-                goto fail;
+		goto fail;
 	entry = *hosts;
 
 	entry->server = calloc(1, sizeof(gluster_hostdef));
 	if (!entry->server)
-                goto fail;
+		goto fail;
 
 	*sep = '\0';
 	entry->volname = strdup(p);
@@ -460,10 +453,10 @@ static glfs_t* tcmu_create_glfs_object(struct tcmu_device *dev,
 
 	return fs;
 
- unref:
+unref:
 	gluster_cache_refresh(fs, config);
 
- fail:
+fail:
 	gluster_free_server(hosts);
 	return NULL;
 }
@@ -489,6 +482,7 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 	struct stat st;
 	int ret = -EIO;
 	long long dev_size;
+	uint32_t block_size = tcmu_get_dev_block_size(dev);
 
 	gfsp = calloc(1, sizeof(*gfsp));
 	if (!gfsp)
@@ -521,8 +515,16 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 		goto close;
 	}
 
-	dev_size = tcmu_get_dev_num_lbas(dev) * tcmu_get_dev_block_size(dev);
+	dev_size = tcmu_get_dev_num_lbas(dev) * block_size;
 	if (st.st_size != dev_size) {
+		/*
+		 * The glfs allows the backend file size not to align
+		 * to the block_size. But the dev_size here in tcmu-runner
+		 * will round down and align it to the block_size.
+		 */
+		if (round_down(st.st_size, block_size) == dev_size)
+			goto out;
+
 		if (!reopen) {
 			ret = -EINVAL;
 			goto close;
@@ -542,6 +544,7 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 			goto close;
 	}
 
+out:
 	return 0;
 close:
 	glfs_close(gfsp->gfd);
@@ -579,6 +582,7 @@ static void glfs_async_cbk(glfs_fd_t *fd, ssize_t ret, void *data)
 			break;
 		case TCMU_GLFS_WRITE:
 		case TCMU_GLFS_FLUSH:
+		case TCMU_GLFS_DISCARD:
 			ret = TCMU_STS_WR_ERR;
 			break;
 		}
@@ -672,7 +676,7 @@ static int tcmu_glfs_reconfig(struct tcmu_device *dev,
 			ret = 0;
 		} else if (st.st_size != cfg->data.dev_size) {
 			tcmu_dev_err(dev,
-				     "device size and backing size disagree: device %lld backing %lld\n",
+				     "device size and backing size disagree: device %"PRId64" backing %lld\n",
 				     cfg->data.dev_size, (long long) st.st_size);
 			ret = -EINVAL;
 		}
@@ -702,6 +706,37 @@ static int tcmu_glfs_flush(struct tcmu_device *dev,
 
 	if (glfs_fdatasync_async(state->gfd, glfs_async_cbk, cookie) < 0) {
 		tcmu_dev_err(dev, "glfs_fdatasync_async(vol=%s, file=%s) failed: %m\n",
+		             state->hosts->volname, state->hosts->path);
+		goto out;
+	}
+
+	return TCMU_STS_OK;
+
+out:
+	free(cookie);
+	return TCMU_STS_NO_RESOURCE;
+}
+
+static int tcmu_glfs_discard(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+                             uint64_t offset, uint64_t length)
+{
+	struct glfs_state *state = tcmu_get_dev_private(dev);
+	glfs_cbk_cookie *cookie;
+	ssize_t ret;
+
+	cookie = calloc(1, sizeof(*cookie));
+	if (!cookie) {
+		tcmu_dev_err(dev, "Could not allocate cookie: %m\n");
+		goto out;
+	}
+	cookie->dev = dev;
+	cookie->cmd = cmd;
+	cookie->length = 0;
+	cookie->op = TCMU_GLFS_DISCARD;
+
+	ret = glfs_discard_async(state->gfd, offset, length, glfs_async_cbk, cookie);
+	if (ret < 0) {
+		tcmu_dev_err(dev, "glfs_discard_async(vol=%s, file=%s) failed: %m\n",
 		             state->hosts->volname, state->hosts->path);
 		goto out;
 	}
@@ -744,6 +779,7 @@ struct tcmur_handler glfs_handler = {
 	.write          = tcmu_glfs_write,
 	.reconfig       = tcmu_glfs_reconfig,
 	.flush          = tcmu_glfs_flush,
+	.unmap          = tcmu_glfs_discard,
 };
 
 /* Entry point must be named "handler_init". */

@@ -1,18 +1,10 @@
 /*
- * Copyright 2014, Red Hat, Inc.
+ * Copyright (c) 2014 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
-*/
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
+ */
 
 /*
  * APIs for both libtcmu users and tcmu-runner plugins to use.
@@ -66,6 +58,8 @@ enum {
 	TCMU_STS_NOTSUPP_TGT_DESC_TYPE,
 	TCMU_STS_CP_TGT_DEV_NOTCONN,
 	TCMU_STS_INVALID_CP_TGT_DEV_TYPE,
+	TCMU_STS_TOO_MANY_SEG_DESC,
+	TCMU_STS_TOO_MANY_TGT_DESC,
 };
 
 #define SENSE_BUFFERSIZE 96
@@ -73,9 +67,14 @@ enum {
 #define CFGFS_ROOT "/sys/kernel/config/target"
 #define CFGFS_CORE CFGFS_ROOT"/core"
 
+#define CFGFS_TARGET_MOD "/sys/module/target_core_user"
+#define CFGFS_MOD_PARAM CFGFS_TARGET_MOD"/parameters"
+
 /* Temporarily limit this to 32M */
-#define VPD_MAX_UNMAP_LBA_COUNT            (32 * 1024 * 1024)
+#define VPD_MAX_UNMAP_LBA_COUNT            65536
 #define VPD_MAX_UNMAP_BLOCK_DESC_COUNT     0x04
+/* Temporarily limit this is 0x1 */
+#define MAX_CAW_LENGTH                     0x01
 
 #define max(a, b) ({			\
 	__typeof__ (a) _a = (a);	\
@@ -136,7 +135,12 @@ void tcmu_set_dev_block_size(struct tcmu_device *dev, uint32_t block_size);
 uint32_t tcmu_get_dev_block_size(struct tcmu_device *dev);
 void tcmu_set_dev_max_xfer_len(struct tcmu_device *dev, uint32_t len);
 uint32_t tcmu_get_dev_max_xfer_len(struct tcmu_device *dev);
-void tcmu_set_dev_opt_unmap_gran(struct tcmu_device *dev, uint32_t len);
+void tcmu_set_dev_opt_xcopy_rw_len(struct tcmu_device *dev, uint32_t len);
+uint32_t tcmu_get_dev_opt_xcopy_rw_len(struct tcmu_device *dev);
+void tcmu_set_dev_max_unmap_len(struct tcmu_device *dev, uint32_t len);
+uint32_t tcmu_get_dev_max_unmap_len(struct tcmu_device *dev);
+void tcmu_set_dev_opt_unmap_gran(struct tcmu_device *dev, uint32_t len,
+				 bool split);
 uint32_t tcmu_get_dev_opt_unmap_gran(struct tcmu_device *dev);
 void tcmu_set_dev_unmap_gran_align(struct tcmu_device *dev, uint32_t len);
 uint32_t tcmu_get_dev_unmap_gran_align(struct tcmu_device *dev);
@@ -166,6 +170,9 @@ int tcmu_set_dev_size(struct tcmu_device *dev);
 long long tcmu_get_dev_size(struct tcmu_device *dev);
 char *tcmu_get_wwn(struct tcmu_device *dev);
 int tcmu_set_control(struct tcmu_device *dev, const char *key, unsigned long val);
+void tcmu_reset_netlink(void);
+void tcmu_block_netlink(void);
+void tcmu_unblock_netlink(void);
 int tcmu_get_cdb_length(uint8_t *cdb);
 uint64_t tcmu_get_lba(uint8_t *cdb);
 uint32_t tcmu_get_xfer_length(uint8_t *cdb);
@@ -195,7 +202,7 @@ int tcmu_emulate_mode_sense(struct tcmu_device *dev, uint8_t *cdb,
 int tcmu_emulate_mode_select(struct tcmu_device *dev, uint8_t *cdb,
 			     struct iovec *iovec, size_t iov_cnt);
 /* SCSI helpers */
-void tcmu_cdb_debug_info(struct tcmu_device *dev, const struct tcmulib_cmd *cmd);
+void tcmu_print_cdb_info(struct tcmu_device *dev, const struct tcmulib_cmd *cmd, const char *info);
 
 #ifdef __cplusplus
 }

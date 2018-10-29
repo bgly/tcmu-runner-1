@@ -18,11 +18,11 @@ One goal of TCMU is that configuring a userspace-backed LUN should be as easy as
 
 ### License
 
-tcmu-runner is [Apache 2.0 licensed](http://www.apache.org/licenses/LICENSE-2.0).
+tcmu-runner is LGPLv2.1 or Apache License 2.0.
 
 ### Releases
 
-Tarballs are available from https://fedorahosted.org/released/tcmu-runner/ .
+Tarballs are available from https://github.com/open-iscsi/tcmu-runner/releases.
 
 ### Development
 
@@ -106,9 +106,10 @@ Created user-backed storage object rbd0 size 1073741824.
 
 Note that the cfgstring is handler specific. The format is:
 
-- **rbd**: /pool_name/image_name[;osd_op_timeout=N;conf=N]
+- **rbd**: /pool_name/image_name[;osd_op_timeout=N;conf=N;id=N]
 (osd_op_timeout is optional and N is in seconds)
 (conf is optional and N is the path to the conf file)
+(id is optional and N is the id to connect to the cluster as)
 - **qcow**: /path_to_file
 - **glfs**: /volume@hostname/filename
 - **file**: /path_to_file

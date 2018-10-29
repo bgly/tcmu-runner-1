@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 2.8 FATAL_ERROR)
 project (tcmu-runner C)
-set(VERSION 1.4.0-rc1)
+set(VERSION 1.4.0)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror -Wall -Wdeclaration-after-statement -std=c99")
 
 include(GNUInstallDirs)
@@ -72,6 +72,7 @@ add_library(tcmu_static
   tcmuhandler-generated.c
   libtcmu_log.c
   libtcmu_config.c
+  libtcmu_time.c
   )
 target_include_directories(tcmu_static
   PUBLIC ${LIBNL_INCLUDE_DIR}
@@ -270,6 +271,12 @@ configure_file (
   "${PROJECT_SOURCE_DIR}/tcmu.conf_install.cmake"
   )
 install(SCRIPT tcmu.conf_install.cmake)
+
+configure_file (
+  "${PROJECT_SOURCE_DIR}/logrotate.conf_install.cmake.in"
+  "${PROJECT_SOURCE_DIR}/logrotate.conf_install.cmake"
+  )
+install(SCRIPT logrotate.conf_install.cmake)
 
 install(FILES org.kernel.TCMUService1.service
   DESTINATION /usr/share/dbus-1/system-services)

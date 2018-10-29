@@ -1,17 +1,9 @@
 /*
  * Copyright 2016, China Mobile, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 #define _GNU_SOURCE
@@ -87,6 +79,7 @@ struct tcmu_rbd_state {
 	char *pool_name;
 	char *osd_op_timeout;
 	char *conf_path;
+	char *id;
 };
 
 enum rbd_aio_type {
@@ -243,6 +236,48 @@ static char *tcmu_rbd_find_quote(char *string)
 	return string;
 }
 
+static bool tcmu_rbd_match_device_class(struct tcmu_device *dev,
+					const char *crush_rule,
+					const char *device_class)
+{
+	struct tcmu_rbd_state *state = tcmu_get_dev_private(dev);
+	char *mon_cmd_bufs[2] = {NULL, NULL};
+	char *mon_buf = NULL, *mon_status_buf = NULL;
+	size_t mon_buf_len = 0, mon_status_buf_len = 0;
+	int ret;
+	bool match = false;
+
+	/* request a list of crush rules associated to the device class */
+	ret = asprintf(&mon_cmd_bufs[0],
+		       "{\"prefix\": \"osd crush rule ls-by-class\", "
+		        "\"class\": \"%s\", \"format\": \"json\"}",
+		       device_class);
+	if (ret < 0) {
+		tcmu_dev_warn(dev, "Could not allocate crush rule ls-by-class command.\n");
+		return false;
+	}
+
+	ret = rados_mon_command(state->cluster, (const char **)mon_cmd_bufs, 1,
+				"", 0, &mon_buf, &mon_buf_len,
+				&mon_status_buf, &mon_status_buf_len);
+	free(mon_cmd_bufs[0]);
+	if (ret == -ENOENT) {
+		tcmu_dev_dbg(dev, "%s not a registered device class.\n", device_class);
+		return false;
+	} else if (ret < 0 || !mon_buf) {
+		tcmu_dev_warn(dev, "Could not retrieve pool crush rule ls-by-class (Err %d)\n",
+			      ret);
+		return false;
+	}
+	rados_buffer_free(mon_status_buf);
+
+	/* expected JSON output: ["<rule name>",["<rule name>"...]] */
+	mon_buf[mon_buf_len - 1] = '\0';
+	match = (strstr(mon_buf, crush_rule) != NULL);
+	rados_buffer_free(mon_buf);
+	return match;
+}
+
 static void tcmu_rbd_detect_device_class(struct tcmu_device *dev)
 {
 	struct tcmu_rbd_state *state = tcmu_get_dev_private(dev);
@@ -298,39 +333,13 @@ static void tcmu_rbd_detect_device_class(struct tcmu_device *dev)
 	tcmu_dev_dbg(dev, "Pool %s using crush rule %s\n", state->pool_name,
 		     crush_rule);
 
-	/* request a list of crush rules associated to SSD device class */
-	ret = asprintf(&mon_cmd_bufs[0],
-		       "{\"prefix\": \"osd crush rule ls-by-class\", "
-		        "\"class\": \"ssd\", \"format\": \"json\"}");
-	if (ret < 0) {
-		tcmu_dev_warn(dev, "Could not allocate crush rule ls-by-class command.\n");
-		goto free_crush_rule;
-	}
-
-	ret = rados_mon_command(state->cluster, (const char **)mon_cmd_bufs, 1,
-				"", 0, &mon_buf, &mon_buf_len,
-				&mon_status_buf, &mon_status_buf_len);
-	free(mon_cmd_bufs[0]);
-	if (ret == -ENOENT) {
-		tcmu_dev_dbg(dev, "SSD not a registered device class.\n");
-		goto free_crush_rule;
-	} else if (ret < 0 || !mon_buf) {
-		tcmu_dev_warn(dev, "Could not retrieve pool crush rule ls-by-class (Err %d)\n",
-			      ret);
-		goto free_crush_rule;
-	}
-	rados_buffer_free(mon_status_buf);
-
-	/* expected JSON output: ["<rule name>",["<rule name>"...]] */
-	mon_buf[mon_buf_len - 1] = '\0';
-	if (strstr(mon_buf, crush_rule)) {
-		tcmu_dev_dbg(dev, "Pool %s associated to SSD device class.\n",
+	if (tcmu_rbd_match_device_class(dev, crush_rule, "ssd") ||
+	    tcmu_rbd_match_device_class(dev, crush_rule, "nvme")) {
+		tcmu_dev_dbg(dev, "Pool %s associated to solid state device class.\n",
 			     state->pool_name);
 		tcmu_set_dev_solid_state_media(dev, true);
 	}
-	rados_buffer_free(mon_buf);
 
-free_crush_rule:
 	free(crush_rule);
 }
 
@@ -423,7 +432,7 @@ static int tcmu_rbd_image_open(struct tcmu_device *dev)
 	struct tcmu_rbd_state *state = tcmu_get_dev_private(dev);
 	int ret;
 
-	ret = rados_create(&state->cluster, NULL);
+	ret = rados_create(&state->cluster, state->id);
 	if (ret < 0) {
 		tcmu_dev_err(dev, "Could not create cluster. (Err %d)\n", ret);
 		return ret;
@@ -515,6 +524,19 @@ static int tcmu_rbd_has_lock(struct tcmu_device *dev)
 	tcmu_dev_dbg(dev, "Not owner\n");
 
 	return 0;
+}
+
+static int tcmu_rbd_get_lock_state(struct tcmu_device *dev)
+{
+	int ret;
+
+	ret = tcmu_rbd_has_lock(dev);
+	if (ret == 1)
+		return TCMUR_DEV_LOCK_LOCKED;
+	else if (ret == 0 || ret == -ESHUTDOWN)
+		return TCMUR_DEV_LOCK_UNLOCKED;
+	else
+		return TCMUR_DEV_LOCK_UNKNOWN;
 }
 
 /**
@@ -665,7 +687,7 @@ static int tcmu_rbd_set_lock_tag(struct tcmu_device *dev, uint16_t tcmu_tag)
 	 */
 	ret = rbd_lock_get_owners(state->image, &lock_mode, owners,
 				  &num_owners);
-	tcmu_dev_dbg(dev, "set tag get lockowner got %d %d\n", ret, num_owners);
+	tcmu_dev_dbg(dev, "set tag get lockowner got %d %zd\n", ret, num_owners);
 	if (ret)
 		return ret;
 
@@ -733,7 +755,8 @@ static int tcmu_rbd_lock(struct tcmu_device *dev, uint16_t tag)
 
 set_lock_tag:
 	tcmu_dev_warn(dev, "Acquired exclusive lock.\n");
-	ret = tcmu_rbd_set_lock_tag(dev, tag);
+	if (tag != TCMU_INVALID_LOCK_TAG)
+		ret = tcmu_rbd_set_lock_tag(dev, tag);
 
 done:
 	tcmu_rbd_service_status_update(dev, ret == 0 ? true : false);
@@ -776,6 +799,8 @@ static void tcmu_rbd_state_free(struct tcmu_rbd_state *state)
 		free(state->image_name);
 	if (state->pool_name)
 		free(state->pool_name);
+	if (state->id)
+		free(state->id);
 	free(state);
 }
 
@@ -807,6 +832,7 @@ static int tcmu_rbd_open(struct tcmu_device *dev, bool reopen)
 	char *pool, *name, *next_opt;
 	char *config, *dev_cfg_dup;
 	struct tcmu_rbd_state *state;
+	uint32_t max_blocks;
 	int ret;
 
 	state = calloc(1, sizeof(*state));
@@ -878,6 +904,13 @@ static int tcmu_rbd_open(struct tcmu_device *dev, bool reopen)
 				tcmu_dev_err(dev, "Could not copy conf path.\n");
 				goto free_config;
 			}
+		} else if (!strncmp(next_opt, "id=", 3)) {
+			state->id = strdup(next_opt + 3);
+			if (!state->id || !strlen(state->id)) {
+				ret = -ENOMEM;
+				tcmu_dev_err(dev, "Could not copy id.\n");
+				goto free_config;
+			}
 		}
 		next_opt = strtok(NULL, ";");
 	}
@@ -901,6 +934,17 @@ static int tcmu_rbd_open(struct tcmu_device *dev, bool reopen)
 		goto stop_image;
 	}
 
+	/*
+	 * librbd/ceph can better split and align unmaps and internal RWs, so
+	 * just have runner pass the entire cmd to us. To try and balance
+	 * overflowing the OSD/ceph side queues with discards/RWs limit it to
+	 * up to 4.
+	 */
+	max_blocks = (image_info.obj_size * 4) / tcmu_get_dev_block_size(dev);
+	tcmu_set_dev_opt_xcopy_rw_len(dev, max_blocks);
+	tcmu_set_dev_max_unmap_len(dev, max_blocks);
+	tcmu_set_dev_opt_unmap_gran(dev, image_info.obj_size /
+				    tcmu_get_dev_block_size(dev), false);
 	tcmu_set_dev_write_cache_enabled(dev, 0);
 
 	free(dev_cfg_dup);
@@ -926,13 +970,13 @@ static void tcmu_rbd_close(struct tcmu_device *dev)
 static int tcmu_rbd_handle_blacklisted_cmd(struct tcmu_device *dev,
 					   struct tcmulib_cmd *cmd)
 {
-       tcmu_notify_lock_lost(dev);
+	tcmu_notify_lock_lost(dev);
 	/*
 	 * This will happen during failback normally, because
 	 * running IO is failed due to librbd's immediate blacklisting
 	 * during lock acquisition on a higher priority path.
 	 */
-	return TCMU_STS_TRANSITION;
+	return TCMU_STS_BUSY;
 }
 
 /*
@@ -1043,7 +1087,7 @@ static void rbd_finish_aio_generic(rbd_completion_t completion,
 
 	if (ret == -ETIMEDOUT) {
 		tcmu_r = tcmu_rbd_handle_timedout_cmd(dev, tcmulib_cmd);
-	} else if (ret == -ESHUTDOWN) {
+	} else if (ret == -ESHUTDOWN || ret == -EROFS) {
 		tcmu_r = tcmu_rbd_handle_blacklisted_cmd(dev, tcmulib_cmd);
 	} else if (ret == -EILSEQ && aio_cb->type == RBD_AIO_TYPE_CAW) {
 		cmp_offset = aio_cb->caw.miscompare_offset - aio_cb->caw.offset;
@@ -1055,7 +1099,7 @@ static void rbd_finish_aio_generic(rbd_completion_t completion,
 		tcmu_dev_err(dev, "Invalid IO request.\n");
 		tcmu_r = TCMU_STS_INVALID_CDB;
 	} else if (ret < 0) {
-		tcmu_dev_err(dev, "Got fatal IO error %d.\n", ret);
+		tcmu_dev_err(dev, "Got fatal IO error %"PRId64".\n", ret);
 
 		if (aio_cb->type == RBD_AIO_TYPE_READ)
 			tcmu_r = TCMU_STS_RD_ERR;
@@ -1278,7 +1322,7 @@ static int tcmu_rbd_aio_writesame(struct tcmu_device *dev,
 	if (ret < 0)
 		goto out_free_bounce_buffer;
 
-	tcmu_dev_dbg(dev, "Start write same off:%llu, len:%llu\n", off, len);
+	tcmu_dev_dbg(dev, "Start write same off:%"PRIu64", len:%"PRIu64"\n", off, len);
 
 	ret = rbd_aio_writesame(state->image, off, len, aio_cb->bounce_buffer,
 				length, completion, 0);
@@ -1336,7 +1380,8 @@ static int tcmu_rbd_aio_caw(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 		goto out_free_bounce_buffer;
 	}
 
-	tcmu_dev_dbg(dev, "Start CAW off:%llu, len:%llu\n", off, len);
+	tcmu_dev_dbg(dev, "Start CAW off: %"PRIu64", len: %"PRIu64"\n",
+		     off, len);
 	ret = rbd_aio_compare_and_write(state->image, off, len,
 					aio_cb->bounce_buffer,
 					aio_cb->bounce_buffer + len, completion,
@@ -1420,7 +1465,8 @@ static const char tcmu_rbd_cfg_desc[] =
 	"poolname:	Existing RADOS pool\n"
 	"devicename:	Name of the RBD image\n"
 	"optionN:	Like: \"osd_op_timeout=30\" in secs\n"
-	"                     \"conf=/etc/ceph/cluster.conf\"\n";
+	"                     \"conf=/etc/ceph/cluster.conf\"\n"
+	"                     \"id=user\"\n";
 
 struct tcmur_handler tcmu_rbd_handler = {
 	.name	       = "Ceph RBD handler",
@@ -1442,6 +1488,7 @@ struct tcmur_handler tcmu_rbd_handler = {
 	.lock          = tcmu_rbd_lock,
 	.unlock        = tcmu_rbd_unlock,
 	.get_lock_tag  = tcmu_rbd_get_lock_tag,
+	.get_lock_state = tcmu_rbd_get_lock_state,
 #endif
 };
 

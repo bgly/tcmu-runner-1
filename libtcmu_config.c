@@ -1,17 +1,9 @@
 /*
  * Copyright 2016-2017 China Mobile, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 #define _GNU_SOURCE
@@ -30,6 +22,29 @@
 #include "darray.h"
 #include "libtcmu_config.h"
 #include "libtcmu_log.h"
+#include "tcmu-runner.h"
+
+#include "ccan/list/list.h"
+
+typedef enum {
+	TCMU_OPT_NONE = 0,
+	TCMU_OPT_INT, /* type int */
+	TCMU_OPT_STR, /* type string */
+	TCMU_OPT_BOOL, /* type boolean */
+	TCMU_OPT_MAX,
+} tcmu_option_type;
+
+struct tcmu_conf_option {
+	struct list_node list;
+
+	char *key;
+	tcmu_option_type type;
+	union {
+		int opt_int;
+		bool opt_bool;
+		char *opt_str;
+	};
+};
 
 /*
  * System config for TCMU, for now there are only 3 option types supported:
@@ -83,7 +98,6 @@
  * system config reload thread daemon will try to update them for all the
  * tcmu-runner, consumer and tcmu-synthesizer daemons.
  */
-#include "ccan/list/list.h"
 
 static LIST_HEAD(tcmu_options);
 
@@ -114,21 +128,30 @@ do { \
 	} \
 } while (0)
 
-#define TCMU_PARSE_CFG_BOOL(cfg, key) \
+#define TCMU_PARSE_CFG_BOOL(cfg, key, def) \
 do { \
 	struct tcmu_conf_option *option; \
 	option = tcmu_get_option(#key); \
 	if (option) { \
 		cfg->key = option->opt_bool; \
+		option->opt_bool = def; \
 	} \
 } while (0)
 
-#define TCMU_PARSE_CFG_STR(cfg, key) \
+#define TCMU_PARSE_CFG_STR(cfg, key, def) \
 do { \
 	struct tcmu_conf_option *option; \
+	char buf[1024]; \
 	option = tcmu_get_option(#key); \
 	if (option) { \
-		cfg->key = strdup(option->opt_str); } \
+		if (cfg->key) \
+			free(cfg->key); \
+		cfg->key = strdup(option->opt_str); \
+		if (option->opt_str) \
+			free(option->opt_str); \
+		sprintf(buf, "%s", def); \
+		option->opt_str = strdup(buf); \
+	} \
 } while (0);
 
 #define TCMU_FREE_CFG_STR_KEY(cfg, key) \
@@ -136,7 +159,7 @@ do { \
 	free(cfg->key); \
 } while (0);
 
-static void tcmu_conf_set_options(struct tcmu_config *cfg, bool reloading)
+static void tcmu_conf_set_options(struct tcmu_config *cfg)
 {
 	/* set log_level option */
 	TCMU_PARSE_CFG_INT(cfg, log_level, TCMU_CONF_LOG_INFO);
@@ -144,23 +167,9 @@ static void tcmu_conf_set_options(struct tcmu_config *cfg, bool reloading)
 		tcmu_set_log_level(cfg->log_level);
 	}
 
-	if (!reloading) {
-		/* set log_dir path option */
-		TCMU_PARSE_CFG_STR(cfg, log_dir_path);
-		/*
-		 * The priority of the logdir setting is:
-		 * 1, --tcmu_log_dir/-l LOG_DIR_PATH
-		 * 2, export TCMU_LOGDIR="/var/log/mychoice/"
-		 * 3, tcmu.conf
-		 * 4, default /var/log/
-		 */
-		if (!tcmu_get_logdir())
-			tcmu_logdir_create(cfg->log_dir_path);
-		else
-			tcmu_warn("The logdir option from the tcmu.conf will be ignored\n");
-	} else {
-		tcmu_warn("The logdir option is not supported by dynamic reloading for now!\n");
-	}
+	/* set log_dir path option */
+	TCMU_PARSE_CFG_STR(cfg, log_dir_path, TCMU_LOG_DIR_DEFAULT);
+	tcmu_resetup_log_file(cfg->log_dir_path);
 
 	/* add your new config options */
 }
@@ -172,6 +181,7 @@ static void tcmu_conf_free_str_keys(struct tcmu_config *cfg)
 	 * For example:
 	 * TCMU_FREE_CFG_STR_KEY(cfg, 'STR KEY');
 	 */
+	TCMU_FREE_CFG_STR_KEY(cfg, log_dir_path);
 }
 
 #define TCMU_MAX_CFG_FILE_SIZE (2 * 1024 * 1024)
@@ -273,7 +283,8 @@ static void tcmu_parse_option(char **cur, const char *end)
 	}
 	/* skip character '='  */
 	s++;
-	while (isblank(*r) || *r == '=')
+	r--;
+	while (isblank(*r))
 		r--;
 	r++;
 	*r = '\0';
@@ -281,17 +292,13 @@ static void tcmu_parse_option(char **cur, const char *end)
 	option = tcmu_get_option(p);
 	if (!option) {
 		r = s;
-		while (isblank(*r) || *r == '=')
+		while (isblank(*r))
 			r++;
 
-		if (*r == '"' || *r == '\'') {
-			type = TCMU_OPT_STR;
-		} else if (isdigit(*r)) {
+		if (isdigit(*r))
 			type = TCMU_OPT_INT;
-		} else {
-			tcmu_err("option type not supported!\n");
-			return;
-		}
+		else
+			type = TCMU_OPT_STR;
 
 		option = tcmu_register_option(p, type);
 		if (!option)
@@ -311,7 +318,6 @@ static void tcmu_parse_option(char **cur, const char *end)
 		option->opt_int = atoi(s);
 		break;
 	case TCMU_OPT_STR:
-		s++;
 		while (isblank(*s))
 			s++;
 		/* skip first " or ' if exist */
@@ -330,12 +336,12 @@ static void tcmu_parse_option(char **cur, const char *end)
 		option->opt_str = strdup(s);
 		break;
 	default:
-		tcmu_err("option type %d not supported!\n");
+		tcmu_err("option type %d not supported!\n", option->type);
 		break;
 	}
 }
 
-static void tcmu_parse_options(struct tcmu_config *cfg, char *buf, int len, bool reloading)
+static void tcmu_parse_options(struct tcmu_config *cfg, char *buf, int len)
 {
 	char *cur = buf, *end = buf + len;
 
@@ -357,10 +363,10 @@ static void tcmu_parse_options(struct tcmu_config *cfg, char *buf, int len, bool
 	}
 
 	/* parse the options from tcmu_options[] to struct tcmu_config */
-	tcmu_conf_set_options(cfg, reloading);
+	tcmu_conf_set_options(cfg);
 }
 
-static int tcmu_load_config(struct tcmu_config *cfg, bool reloading)
+static int tcmu_load_config(struct tcmu_config *cfg)
 {
 	int ret = -1;
 	int fd, len;
@@ -385,7 +391,7 @@ static int tcmu_load_config(struct tcmu_config *cfg, bool reloading)
 
 	buf[len] = '\0';
 
-	tcmu_parse_options(cfg, buf, len, reloading);
+	tcmu_parse_options(cfg, buf, len);
 
 	ret = 0;
 free_buf:
@@ -444,7 +450,7 @@ static void *dyn_config_start(void *arg)
 
 			/* Try to reload the config file */
 			if (event->mask & IN_MODIFY || event->mask & IN_IGNORED)
-				tcmu_load_config(cfg, true);
+				tcmu_load_config(cfg);
 
 			p += sizeof(struct inotify_event) + event->len;
 		}
@@ -453,7 +459,7 @@ static void *dyn_config_start(void *arg)
 	return NULL;
 }
 
-struct tcmu_config *tcmu_setup_config(const char *path)
+struct tcmu_config *tcmu_parse_config(const char *path)
 {
 	struct tcmu_config *cfg;
 
@@ -472,19 +478,9 @@ struct tcmu_config *tcmu_setup_config(const char *path)
 		goto free_cfg;
 	}
 
-	if (tcmu_load_config(cfg, false)) {
+	if (tcmu_load_config(cfg)) {
 		tcmu_err("Loading TCMU config failed!\n");
 		goto free_path;
-	}
-
-	/*
-	 * If the dynamic reloading thread fails to start, it will fall
-	 * back to static config
-	 */
-	if (pthread_create(&cfg->thread_id, NULL, dyn_config_start, cfg)) {
-		tcmu_warn("Dynamic config started failed, fallling back to static!\n");
-	} else {
-		cfg->is_dynamic = true;
 	}
 
 	return cfg;
@@ -496,37 +492,22 @@ free_cfg:
 	return NULL;
 }
 
-static void tcmu_cancel_config_thread(struct tcmu_config *cfg)
+int tcmu_watch_config(struct tcmu_config *cfg)
 {
-	pthread_t thread_id = cfg->thread_id;
-	void *join_retval;
-	int ret;
-
-	ret = pthread_cancel(thread_id);
-	if (ret) {
-		tcmu_err("pthread_cancel failed with value %d\n", ret);
-		return;
-	}
-
-	ret = pthread_join(thread_id, &join_retval);
-	if (ret) {
-		tcmu_err("pthread_join failed with value %d\n", ret);
-		return;
-	}
-
-	if (join_retval != PTHREAD_CANCELED)
-		tcmu_err("unexpected join retval: %p\n", join_retval);
+	return pthread_create(&cfg->thread_id, NULL, dyn_config_start, cfg);
 }
 
-void tcmu_destroy_config(struct tcmu_config *cfg)
+void tcmu_unwatch_config(struct tcmu_config *cfg)
+{
+	tcmu_cancel_thread(cfg->thread_id);
+}
+
+void tcmu_free_config(struct tcmu_config *cfg)
 {
 	struct tcmu_conf_option *option, *next;
 
 	if (!cfg)
 		return;
-
-	if (cfg->is_dynamic)
-		tcmu_cancel_config_thread(cfg);
 
 	list_for_each_safe(&tcmu_options, option, next, list) {
 		list_del(&option->list);
@@ -538,8 +519,6 @@ void tcmu_destroy_config(struct tcmu_config *cfg)
 	}
 
 	tcmu_conf_free_str_keys(cfg);
-	if (cfg->log_dir_path)
-		free(cfg->log_dir_path);
 	free(cfg->path);
 	free(cfg);
 }

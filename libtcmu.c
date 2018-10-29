@@ -1,19 +1,10 @@
 /*
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 #define _GNU_SOURCE
-#define _BITS_UIO_H
 #include <memory.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -27,7 +18,6 @@
 #include <errno.h>
 #include <dirent.h>
 #include <scsi/scsi.h>
-
 
 #include <libnl3/netlink/genl/genl.h>
 #include <libnl3/netlink/genl/mngt.h>
@@ -407,7 +397,7 @@ void tcmu_block_device(struct tcmu_device *dev)
 		tcmu_dev_warn(dev, "Could not block device %d.\n", rc);
 		return;
 	}
-	tcmu_dev_dbg(dev, "block done\n")
+	tcmu_dev_dbg(dev, "block done\n");
 }
 
 void tcmu_unblock_device(struct tcmu_device *dev)
@@ -864,18 +854,51 @@ uint32_t tcmu_get_dev_max_xfer_len(struct tcmu_device *dev)
 }
 
 /**
+ * tcmu_set_dev_opt_xcopy_rw_len - set device's emulated xcopy chunk len
+ * @dev: tcmu device
+ * @len: optimal RW len, in block_size sectors, for emulate xcopy operations
+ */
+void tcmu_set_dev_opt_xcopy_rw_len(struct tcmu_device *dev, uint32_t len)
+{
+	dev->opt_xcopy_rw_len = len;
+}
+
+uint32_t tcmu_get_dev_opt_xcopy_rw_len(struct tcmu_device *dev)
+{
+	return dev->opt_xcopy_rw_len;
+}
+
+/**
  * tcmu_set/get_dev_opt_unmap_gran - set/get device's optimal unmap granularity
  * @dev: tcmu device
  * @len: optimal unmap granularity length in block_size sectors
+ * @split: true if handler needs unmaps larger then len to be split for it.
  */
-void tcmu_set_dev_opt_unmap_gran(struct tcmu_device *dev, uint32_t len)
+void tcmu_set_dev_opt_unmap_gran(struct tcmu_device *dev, uint32_t len,
+				 bool split)
 {
+	dev->split_unmaps = split;
 	dev->opt_unmap_gran = len;
 }
 
 uint32_t tcmu_get_dev_opt_unmap_gran(struct tcmu_device *dev)
 {
 	return dev->opt_unmap_gran;
+}
+
+/**
+ * tcmu_set/get_dev_max_unmap_len - set/get device's man unmap len
+ * @dev: tcmu device
+ * @len: max unmap len in block_size sectors
+ */
+void tcmu_set_dev_max_unmap_len(struct tcmu_device *dev, uint32_t len)
+{
+	dev->max_unmap_len = len;
+}
+
+uint32_t tcmu_get_dev_max_unmap_len(struct tcmu_device *dev)
+{
+	return dev->max_unmap_len;
 }
 
 /**
@@ -1072,6 +1095,14 @@ static int tcmu_sts_to_scsi(int tcmu_sts, uint8_t *sense)
 	case TCMU_STS_NOTSUPP_TGT_DESC_TYPE:
 		/* Unsupported target descriptor type code */
 		tcmu_set_sense_data(sense, ILLEGAL_REQUEST, 0x2607);
+		break;
+	case TCMU_STS_TOO_MANY_SEG_DESC:
+		/* The number of segment descriptors exceeds the allowed number */
+		tcmu_set_sense_data(sense, ILLEGAL_REQUEST, 0x2608);
+		break;
+	case TCMU_STS_TOO_MANY_TGT_DESC:
+		/* The number of CSCD descriptors exceeds the allowed number */
+		tcmu_set_sense_data(sense, ILLEGAL_REQUEST, 0x2606);
 		break;
 	case TCMU_STS_CP_TGT_DEV_NOTCONN:
 		/* Copy target device not reachable */

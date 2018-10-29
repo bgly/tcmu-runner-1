@@ -1,18 +1,11 @@
 /*
- * Copyright 2017, Red Hat, Inc.
+ * Copyright (c) 2017 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
-*/
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
+ */
+
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,8 +26,6 @@
 #include "tcmur_device.h"
 #include "target.h"
 #include "alua.h"
-
-#define TCMU_ALUA_INVALID_GROUP_ID USHRT_MAX
 
 static char *tcmu_get_alua_str_setting(struct alua_grp *group,
 				       const char *setting)
@@ -210,11 +201,6 @@ tcmu_get_alua_grp(struct tcmu_device *dev, const char *name)
 
 		group->tpgs = TPGS_ALUA_IMPLICIT;
 	} else if (!strcmp(str_val, "Implicit")) {
-		if (!failover_is_supported(dev)) {
-			tcmu_dev_err(dev, "device failover is not supported with the alua access type: Implicit\n");
-			goto free_str_val;
-		}
-
 		rdev->failover_type = TMCUR_DEV_FAILOVER_IMPLICIT;
 
 		group->tpgs = TPGS_ALUA_IMPLICIT;
@@ -227,11 +213,6 @@ tcmu_get_alua_grp(struct tcmu_device *dev, const char *name)
 
 		goto free_str_val;
 	} else if (!strcmp(str_val, "Implicit and Explicit")) {
-		if (!failover_is_supported(dev)) {
-			tcmu_dev_err(dev, "device failover is not supported with the alua access type: Implicit and Explicit\n");
-			goto free_str_val;
-		}
-
 		/*
 		 * Only report explicit so initiator always sends STPG.
 		 * We only need implicit enabled in the kernel so we can
@@ -240,6 +221,10 @@ tcmu_get_alua_grp(struct tcmu_device *dev, const char *name)
 		rdev->failover_type = TMCUR_DEV_FAILOVER_EXPLICIT;
 
 		group->tpgs = TPGS_ALUA_EXPLICIT;
+
+		tcmu_dev_warn(dev, "Unsupported alua_access_type: Implicit and Explicit failover not supported.\n");
+
+		goto free_str_val;
 	} else {
 		tcmu_dev_err(dev, "Invalid ALUA type %s", str_val);
 		goto free_str_val;
@@ -404,8 +389,8 @@ static int alua_set_state(struct tcmu_device *dev, struct alua_grp *group,
  * @group_list: list of alua groups
  * @enabled_group_id: group id of the local enabled alua group
  *
- * If the handler is not able to update the remote nodes's state during STPG
- * handling we update it now.
+ * If the handler is not able to update the remote nodes's state during ALUA
+ * transition handling we update it now.
  */
 static int alua_sync_state(struct tcmu_device *dev,
 			   struct list_head *group_list,
@@ -418,13 +403,18 @@ static int alua_sync_state(struct tcmu_device *dev,
 	uint8_t alua_state;
 	int ret;
 
+	if (rdev->failover_type == TMCUR_DEV_FAILOVER_IMPLICIT) {
+		tcmu_update_dev_lock_state(dev);
+		return TCMU_STS_OK;
+	}
+
 	if (rdev->failover_type != TMCUR_DEV_FAILOVER_EXPLICIT ||
 	    !rhandler->get_lock_tag)
 		return TCMU_STS_OK;
 
 	ret = tcmu_get_lock_tag(dev, &ao_group_id);
 	if (ret == TCMU_STS_NO_LOCK_HOLDERS) {
-		ao_group_id = TCMU_ALUA_INVALID_GROUP_ID;
+		ao_group_id = TCMU_INVALID_LOCK_TAG;
 	} else if (ret != TCMU_STS_OK)
 		return ret;
 
@@ -544,7 +534,7 @@ free_buf:
 	return ret;
 }
 
-bool failover_is_supported(struct tcmu_device *dev)
+bool lock_is_required(struct tcmu_device *dev)
 {
 	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
 
@@ -564,14 +554,19 @@ int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	pthread_attr_t attr;
 	int ret = TCMU_STS_OK;
 
+	if (!lock_is_required(dev))
+		return ret;
+
 	pthread_mutex_lock(&rdev->state_lock);
-	tcmu_dev_dbg(dev, "lock state %d\n", rdev->lock_state);
 	if (rdev->lock_state == TCMUR_DEV_LOCK_LOCKED) {
 		goto done;
 	} else if (rdev->lock_state == TCMUR_DEV_LOCK_LOCKING) {
-		ret = TCMU_STS_TRANSITION;
+		tcmu_dev_dbg(dev, "Lock acquisition operation is already in process.\n");
+		ret = TCMU_STS_BUSY;
 		goto done;
 	}
+
+	tcmu_dev_info(dev, "Starting lock acquisition operation.\n");
 
 	rdev->lock_state = TCMUR_DEV_LOCK_LOCKING;
 
@@ -592,7 +587,7 @@ int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
 		ret = TCMU_STS_IMPL_TRANSITION_ERR;
 	} else {
-		ret = TCMU_STS_TRANSITION;
+		ret = TCMU_STS_BUSY;
 	}
 
 done:
@@ -645,7 +640,7 @@ static int tcmu_explicit_transition(struct list_head *group_list,
 
 	switch (new_state) {
 	case ALUA_ACCESS_STATE_OPTIMIZED:
-		if (!failover_is_supported(dev))
+		if (!lock_is_required(dev))
 			/* just change local state */
 			break;
 
@@ -682,7 +677,7 @@ static int tcmu_explicit_transition(struct list_head *group_list,
 		tcmu_dev_err(dev, "Igoring ANO/unavail/offline\n");
 		return TCMU_STS_INVALID_PARAM_LIST;
 	case ALUA_ACCESS_STATE_STANDBY:
-		if (failover_is_supported(dev))
+		if (lock_is_required(dev))
 			tcmu_release_dev_lock(dev);
 		break;
 	default:
@@ -775,10 +770,7 @@ int alua_check_state(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
 	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
 
-	if (!failover_is_supported(dev))
-		return 0;
-
-        if (rdev->failover_type == TMCUR_DEV_FAILOVER_EXPLICIT) {
+	if (rdev->failover_type == TMCUR_DEV_FAILOVER_EXPLICIT) {
 		if (rdev->lock_state != TCMUR_DEV_LOCK_LOCKED) {
 			tcmu_dev_dbg(dev, "device lock not held.\n");
 			return TCMU_STS_FENCED;
@@ -787,5 +779,5 @@ int alua_check_state(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		return alua_implicit_transition(dev, cmd);
 	}
 
-	return 0;
+	return TCMU_STS_OK;
 }

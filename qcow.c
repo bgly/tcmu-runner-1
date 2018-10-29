@@ -1,17 +1,9 @@
 /*
- * Copyright 2016, Red Hat, Inc.
+ * Copyright (c) 2016 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 /* Based on QEMU block/qcow{2}.c, which has this license: */
@@ -462,7 +454,7 @@ static int qcow_image_open(struct bdev *bdev, int dirfd, const char *pathname, i
 	}
 
 	if (pread(bdev->fd, &buf, sizeof(buf), 0) != sizeof(buf)) {
-		tcmu_err("Failed to read file: &s\n", pathname);
+		tcmu_err("Failed to read file: %s\n", pathname);
 		goto fail;
 	}
 
@@ -740,7 +732,7 @@ static uint64_t *l2_cache_lookup(struct qcow_state *s, uint64_t l2_offset)
 				}
 			}
 			l2_table = s->l2_cache + (i << s->l2_bits);
-			tcmu_dbg("%s: l2 hit %llx at index %d\n", __func__, l2_table, i);
+			tcmu_dbg("%s: l2 hit %"PRIx64" at index %d\n", __func__, *l2_table, i);
 			return l2_table;
 		}
 	}
@@ -792,7 +784,7 @@ static int l1_table_update(struct qcow_state *s, unsigned int l1_index, uint64_t
 {
 	ssize_t ret;
 
-	tcmu_dbg("%s: setting L1[%d] to %llx\n", __func__, l1_index, l2_offset);
+	tcmu_dbg("%s: setting L1[%u] to %"PRIx64"\n", __func__, l1_index, l2_offset);
 	s->l1_table[l1_index] = htobe64(l2_offset);
 
 	ret = pwrite(s->fd,
@@ -932,7 +924,7 @@ static int rc_table_update(struct qcow_state *s, unsigned int rc_index, uint64_t
 {
 	ssize_t ret;
 
-	tcmu_dbg("%s: setting RC[%d] to %llx\n", __func__, rc_index, refblock_offset);
+	tcmu_dbg("%s: setting RC[%u] to %"PRIx64"\n", __func__, rc_index, refblock_offset);
 	s->refcount_table[rc_index] = htobe64(refblock_offset);
 
 	ret = pwrite(s->fd,
@@ -961,7 +953,8 @@ static int qcow2_set_refcount(struct qcow_state *s, uint64_t cluster_offset, uin
 	refblock_offset = be64toh(s->refcount_table[rc_index]);
 	refblock_index = (cluster_offset >> s->cluster_bits) & ((1 << refcount_bits) - 1);
 
-	tcmu_dbg("%s: rc[%d][%d] = %llx[%d] = %d\n", __func__, rc_index, refblock_index, refblock_offset, refblock_index, value);
+	tcmu_dbg("%s: rc[%"PRIu64"][%"PRIu64"] = %"PRIx64"[%"PRIu64"] = %"PRIu64"\n",
+		__func__, rc_index, refblock_index, refblock_offset, refblock_index, value);
 
 	if (!refblock_offset) {
 		if (!(refblock_offset = qcow_cluster_alloc(s))) {
@@ -1012,7 +1005,7 @@ static uint64_t qcow2_block_alloc(struct qcow_state *s, size_t size)
 	s->first_free_cluster = cluster + s->cluster_size;
 	// this causes a nasty loop
 	// qcow2_set_refcount(s, cluster, 1);
-	tcmu_dbg("  allocating cluster %d\n", cluster / s->cluster_size);
+	tcmu_dbg("  allocating cluster %"PRIu64"\n", cluster / s->cluster_size);
 	return cluster;
 }
 
@@ -1022,7 +1015,8 @@ static int l2_table_update(struct qcow_state *s,
 {
 	ssize_t ret;
 
-	tcmu_dbg("%s: setting %llx[%d] to %llx\n", __func__, l2_table_offset, l2_index, cluster_offset);
+	tcmu_dbg("%s: setting %"PRIx64"[%u] to %"PRIx64"\n",
+		__func__, l2_table_offset, l2_index, cluster_offset);
 	l2_table[l2_index] = htobe64(cluster_offset);
 
 	ret = pwrite(s->fd,

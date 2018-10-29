@@ -1,17 +1,9 @@
 /*
  * Copyright 2017, Western Digital Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 /*
@@ -21,6 +13,7 @@
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1895,7 +1888,7 @@ static int zbc_check_rdwr(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	size_t iov_length = tcmu_iovec_length(cmd->iovec, cmd->iov_cnt);
 
 	if (iov_length != nr_lbas * zdev->lba_size) {
-		tcmu_dev_err(dev, "iov len mismatch: iov len %zu, xfer len %lu, block size %lu\n",
+		tcmu_dev_err(dev, "iov len mismatch: iov len %zu, xfer len %zu, block size %zu\n",
 			     iov_length, nr_lbas, zdev->lba_size);
 		return tcmu_set_sense_data(cmd->sense_buf,
 					   HARDWARE_ERROR,
@@ -1903,7 +1896,7 @@ static int zbc_check_rdwr(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	}
 
 	if (lba + nr_lbas > zdev->capacity || lba + nr_lbas < lba) {
-		tcmu_dev_err(dev, "cmd exceeds last lba %llu (lba %llu, xfer len %lu)\n",
+		tcmu_dev_err(dev, "cmd exceeds last lba %llu (lba %"PRIu64", xfer len %zu)\n",
 			     zdev->capacity, lba, nr_lbas);
 		return tcmu_set_sense_data(cmd->sense_buf,
 					   ILLEGAL_REQUEST,
@@ -2036,21 +2029,49 @@ static int zbc_write_check_zones(struct tcmu_device *dev,
 		zone = zbc_get_zone(zdev, lba, false);
 		if (!zone) {
 			tcmu_dev_err(zdev->dev,
-				     "Get zone at LBA %llu failed\n",
+				     "Get zone at LBA %"PRIu64" failed\n",
 				     lba);
 			return tcmu_set_sense_data(cmd->sense_buf,
 						   HARDWARE_ERROR,
 						   ASC_INTERNAL_TARGET_FAILURE);
 		}
 
-		/* Check conv -> seq and seq -> seq zone boundary crossing */
+		/* Check conv -> seq zone boundary crossing */
 		if (zone_type == 0)
 			zone_type = zone->type;
-		if (zone->type != zone_type ||
-		    (zbc_zone_seq_req(zone) &&
-		     lba + nr_lbas > zone->start + zone->len)) {
+		if (zone->type != zone_type) {
 			tcmu_dev_err(dev,
-				     "Write boundary violation lba %llu, xfer len %lu\n",
+				     "Write boundary violation lba %"PRIu64", xfer len %zu\n",
+				     lba, nr_lbas);
+			return tcmu_set_sense_data(cmd->sense_buf,
+						   ILLEGAL_REQUEST,
+						   ASC_WRITE_BOUNDARY_VIOLATION);
+		}
+
+		/* Check full zone */
+		if (zbc_zone_full(zone)) {
+			tcmu_dev_err(dev,
+				     "Write to FULL zone: zone_type %d, zone_status %d\n",
+				     zone->type, zone->cond);
+				return tcmu_set_sense_data(cmd->sense_buf,
+							   ILLEGAL_REQUEST,
+							   ASC_INVALID_FIELD_IN_CDB);
+		}
+
+		/* Check LBA on write pointer */
+		if (zbc_zone_seq_req(zone) && lba != zone->wp) {
+			tcmu_dev_err(dev, "Unaligned write lba %"PRIu64", wp %llu\n",
+				     lba, zone->wp);
+			return tcmu_set_sense_data(cmd->sense_buf,
+						   ILLEGAL_REQUEST,
+						   ASC_UNALIGNED_WRITE_COMMAND);
+		}
+
+		/* Check seq zone boundary crossing */
+		if (zbc_zone_seq_req(zone) &&
+		     lba + nr_lbas > zone->start + zone->len) {
+			tcmu_dev_err(dev,
+				     "Write boundary violation lba %"PRIu64", xfer len %zu\n",
 				     lba, nr_lbas);
 			return tcmu_set_sense_data(cmd->sense_buf,
 						   ILLEGAL_REQUEST,
@@ -2058,27 +2079,9 @@ static int zbc_write_check_zones(struct tcmu_device *dev,
 		}
 
 		/*
-		 * For sequential write required zones, enforce write pointer
-		 * position. Same for conventional zones with conv_check_wp
-		 * enabled.
+		 * Calculate remaining LBAs to check that writes in
+		 * conventional zones do not cross into sequential zones"
 		 */
-		if (zbc_zone_seq_req(zone) && lba != zone->wp) {
-			tcmu_dev_err(dev, "Unaligned write lba %llu, wp %llu\n",
-				     lba, zone->wp);
-			if (zbc_zone_full(zone)) {
-				tcmu_dev_err(dev,
-					     "Write to FULL zone: start %llu, lba %llu\n",
-					     zone->start, lba);
-					return tcmu_set_sense_data(cmd->sense_buf,
-								   ILLEGAL_REQUEST,
-								   ASC_INVALID_FIELD_IN_CDB);
-			}
-
-			return tcmu_set_sense_data(cmd->sense_buf,
-						   ILLEGAL_REQUEST,
-						   ASC_UNALIGNED_WRITE_COMMAND);
-		}
-
 		if (lba + nr_lbas > zone->start + zone->len)
 			count = zone->start + zone->len - lba;
 		else
@@ -2102,14 +2105,13 @@ static int zbc_write(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	uint64_t lba = tcmu_get_lba(cdb);
 	size_t nr_lbas = tcmu_get_xfer_length(cdb);
 	size_t count, lba_count;
-	size_t iov_cnt = cmd->iov_cnt;
 	struct iovec *iovec = cmd->iovec;
 	struct zbc_zone *zone;
 	ssize_t ret;
 
 	tcmu_dev_dbg(dev, "Write LBA %llu+%u, %zu vectors\n",
 		     (unsigned long long)lba,
-		     tcmu_get_xfer_length(cdb), iov_cnt);
+		     tcmu_get_xfer_length(cdb), cmd->iov_cnt);
 
 	/* Check LBA and length */
 	ret = zbc_check_rdwr(dev, cmd);
@@ -2128,7 +2130,7 @@ static int zbc_write(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		zone = zbc_get_zone(zdev, lba, false);
 		if (lba + nr_lbas > zone->start + zone->len) {
 			tcmu_dev_err(dev,
-				     "Write boundary violation lba %llu, xfer len %lu\n",
+				     "Write boundary violation lba %"PRIu64", xfer len %zu\n",
 				     lba, nr_lbas);
 			return tcmu_set_sense_data(cmd->sense_buf,
 						   ILLEGAL_REQUEST,
@@ -2163,7 +2165,7 @@ static int zbc_write(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 						   ASC_WRITE_ERROR);
 		}
 
-		tcmu_seek_in_iovec(iovec, ret);
+		iovec += tcmu_seek_in_iovec(iovec, ret);
 		count = ret / zdev->lba_size;
 
 		/* Adjust write pointer */

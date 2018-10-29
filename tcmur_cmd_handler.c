@@ -1,17 +1,9 @@
 /*
- * Copyright 2017, Red Hat, Inc.
+ * Copyright (c) 2017 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 #define _GNU_SOURCE
@@ -107,13 +99,13 @@ static void free_iovec(struct tcmulib_cmd *cmd)
 static inline int check_iovec_length(struct tcmu_device *dev,
 				     struct tcmulib_cmd *cmd, uint32_t sectors)
 {
-        size_t iov_length = tcmu_iovec_length(cmd->iovec, cmd->iov_cnt);
+	size_t iov_length = tcmu_iovec_length(cmd->iovec, cmd->iov_cnt);
 
-        if (iov_length != sectors * tcmu_get_dev_block_size(dev)) {
-                tcmu_dev_err(dev, "iov len mismatch: iov len %zu, xfer len %lu, block size %lu\n",
-                             iov_length, sectors, tcmu_get_dev_block_size(dev));
+	if (iov_length != sectors * tcmu_get_dev_block_size(dev)) {
+		tcmu_dev_err(dev, "iov len mismatch: iov len %zu, xfer len %u, block size %u\n",
+			     iov_length, sectors, tcmu_get_dev_block_size(dev));
 		return TCMU_STS_HW_ERR;
-        }
+	}
 	return TCMU_STS_OK;
 }
 
@@ -123,7 +115,7 @@ static inline int check_lbas(struct tcmu_device *dev,
 	uint64_t dev_last_lba = tcmu_get_dev_num_lbas(dev);
 
 	if (start_lba + lba_cnt > dev_last_lba || start_lba + lba_cnt < start_lba) {
-		tcmu_dev_err(dev, "cmd exceeds last lba %llu (lba %llu, xfer len %lu)\n",
+		tcmu_dev_err(dev, "cmd exceeds last lba %"PRIu64" (lba %"PRIu64", xfer len %"PRIu64")\n",
 			     dev_last_lba, start_lba, lba_cnt);
 		return TCMU_STS_RANGE;
 	}
@@ -290,27 +282,38 @@ static int align_and_split_unmap(struct tcmu_device *dev,
 	struct tcmulib_cmd *ucmd;
 	uint64_t lbas;
 
-	/* OPTIMAL UNMAP GRANULARITY */
-	opt_unmap_gran = tcmu_get_dev_opt_unmap_gran(dev);
+	if (!dev->split_unmaps) {
+		/*
+		 * Handler does not support vectored unmaps, but prefers to
+		 * break up unmaps itself, so pass the entire segment to it.
+		 */
+		opt_unmap_gran = tcmu_get_dev_max_unmap_len(dev);
+		mask = 0;
+	} else {
+		/*
+		 * Align the start lba of a unmap request and split the
+		 * large num blocks into OPTIMAL UNMAP GRANULARITY size.
+		 *
+		 * NOTE: here we always asumme the OPTIMAL UNMAP GRANULARITY
+		 * equals to UNMAP GRANULARITY ALIGNMENT to simplify the
+		 * algorithm. In the future, for new devices that have different
+		 * values the following align and split algorithm should be
+		 * changed.
+		 */
 
-	/* UNMAP GRANULARITY ALIGNMENT */
-	unmap_gran_align = tcmu_get_dev_unmap_gran_align(dev);
-	mask = unmap_gran_align - 1;
+		/* OPTIMAL UNMAP GRANULARITY */
+		opt_unmap_gran = tcmu_get_dev_opt_unmap_gran(dev);
 
-	tcmu_dev_dbg(dev, "OPTIMAL UNMAP GRANULARITY: %lu, UNMAP GRANULARITY ALIGNMENT: %lu\n",
-		     opt_unmap_gran, unmap_gran_align);
+		/* UNMAP GRANULARITY ALIGNMENT */
+		unmap_gran_align = tcmu_get_dev_unmap_gran_align(dev);
+		mask = unmap_gran_align - 1;
+	}
 
-	/*
-	 * Align the start lba of a unmap request and split the
-	 * large num blocks into OPTIMAL UNMAP GRANULARITY size.
-	 *
-	 * NOTE: here we always asumme the OPTIMAL UNMAP GRANULARITY
-	 * equals to UNMAP GRANULARITY ALIGNMENT to simplify the
-	 * algorithm. In the future, for new devices that have different
-	 * values the following align and split algorithm should be changed.
-	 */
 	lbas = opt_unmap_gran - (lba & mask);
 	lbas = min(lbas, nlbas);
+
+	tcmu_dev_dbg(dev, "OPTIMAL UNMAP GRANULARITY: %"PRIu64", UNMAP GRANULARITY ALIGNMENT mask: %"PRIu64", lbas %"PRIu64"\n",
+		     opt_unmap_gran, mask, lbas);
 
 	while (nlbas) {
 		desc = calloc(1, sizeof(*desc));
@@ -333,12 +336,12 @@ static int align_and_split_unmap(struct tcmu_device *dev,
 
 		/* The first one */
 		if (j++ == 0)
-			tcmu_dev_dbg(dev, "The first split: start lba: %llu, end lba: %llu, lbas: %u\n",
+			tcmu_dev_dbg(dev, "The first split: start lba: %"PRIu64", end lba: %"PRIu64", lbas: %"PRIu64"\n",
 				     lba, lba + lbas - 1, lbas);
 
 		/* The last one */
 		if (nlbas == lbas) {
-			tcmu_dev_dbg(dev, "The last split: start lba: %llu, end lba: %llu, lbas: %u\n",
+			tcmu_dev_dbg(dev, "The last split: start lba: %"PRIu64", end lba: %"PRIu64", lbas: %"PRIu64"\n",
 				     lba, lba + lbas - 1, lbas);
 			tcmu_dev_dbg(dev, "There are totally %d splits\n", j);
 		}
@@ -382,12 +385,12 @@ static int handle_unmap_internal(struct tcmu_device *dev, struct tcmulib_cmd *or
 		lba = be64toh(*((uint64_t *)&par[offset]));
 		nlbas = be32toh(*((uint32_t *)&par[offset + 8]));
 
-		tcmu_dev_dbg(dev, "Parameter list %d, start lba: %llu, end lba: %llu, nlbas: %u\n",
+		tcmu_dev_dbg(dev, "Parameter list %d, start lba: %"PRIu64", end lba: %"PRIu64", nlbas: %"PRIu64"\n",
 			     i++, lba, lba + nlbas - 1, nlbas);
 
-		if (nlbas > VPD_MAX_UNMAP_LBA_COUNT) {
-			tcmu_dev_err(dev, "Illegal parameter list LBA count %lu exceeds:%u\n",
-				     nlbas, VPD_MAX_UNMAP_LBA_COUNT);
+		if (nlbas > tcmu_get_dev_max_unmap_len(dev)) {
+			tcmu_dev_err(dev, "Illegal parameter list LBA count %"PRIu64" exceeds:%u\n",
+				     nlbas, tcmu_get_dev_max_unmap_len(dev));
 			ret = TCMU_STS_INVALID_PARAM_LIST;
 			goto state_unlock;
 		}
@@ -478,7 +481,7 @@ static int handle_unmap(struct tcmu_device *dev, struct tcmulib_cmd *origcmd)
 	 * The PARAMETER LIST LENGTH should be greater than eight,
 	 */
 	if (data_length < 8) {
-		tcmu_dev_err(dev, "Illegal parameter list length %llu and it should be >= 8\n",
+		tcmu_dev_err(dev, "Illegal parameter list length %zu and it should be >= 8\n",
 			     data_length);
 		return TCMU_STS_INVALID_PARAM_LIST_LEN;
 	}
@@ -599,12 +602,12 @@ static void handle_writesame_cbk(struct tcmu_device *dev,
 		goto finish_err;
 
 	if (left_lbas <= write_lbas) {
-		tcmu_dev_dbg(dev, "Last lba: %llu, write lbas: %llu\n",
+		tcmu_dev_dbg(dev, "Last lba: %"PRIu64", write lbas: %"PRIu64"\n",
 			     write_same->cur_lba, left_lbas);
 
 		write_same->iov_len = left_lbas * block_size;
 	} else {
-		tcmu_dev_dbg(dev, "Next lba: %llu, write lbas: %llu\n",
+		tcmu_dev_dbg(dev, "Next lba: %"PRIu64", write lbas: %"PRIu64"\n",
 			     write_same->cur_lba, write_lbas);
 	}
 
@@ -632,7 +635,7 @@ static int handle_writesame_check(struct tcmu_device *dev, struct tcmulib_cmd *c
 	int ret;
 
 	if (cmd->iov_cnt != 1 || cmd->iovec->iov_len != block_size) {
-		tcmu_dev_err(dev, "Illegal Data-Out: iov_cnt %u length: %u\n",
+		tcmu_dev_err(dev, "Illegal Data-Out: iov_cnt %zu length: %zu\n",
 			     cmd->iov_cnt, cmd->iovec->iov_len);
 		return TCMU_STS_INVALID_CDB;
 	}
@@ -666,7 +669,7 @@ static int handle_writesame_check(struct tcmu_device *dev, struct tcmulib_cmd *c
 	if (ret)
 		return ret;
 
-	tcmu_dev_dbg(dev, "Start lba: %llu, number of lba:: %hu, last lba: %llu\n",
+	tcmu_dev_dbg(dev, "Start lba: %"PRIu64", number of lba: %u, last lba: %"PRIu64"\n",
 		     start_lba, lba_cnt, start_lba + lba_cnt - 1);
 
 	return TCMU_STS_OK;
@@ -752,7 +755,7 @@ static int handle_writesame(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 
 	cmd->done = handle_writesame_cbk;
 
-	tcmu_dev_dbg(dev, "First lba: %llu, write lbas: %llu\n",
+	tcmu_dev_dbg(dev, "First lba: %"PRIu64", write lbas: %"PRIu64"\n",
 		     start_lba, write_lbas);
 
 	return async_handle_cmd(dev, cmd, writesame_work_fn);
@@ -884,7 +887,7 @@ static void handle_write_verify_read_cbk(struct tcmu_device *dev,
 	cmp_offset = tcmu_compare_with_iovec(state->read_buf, state->w_iovec,
 					     state->requested);
 	if (cmp_offset != -1) {
-		tcmu_dev_err(dev, "Verify failed at offset %lu\n", cmp_offset);
+		tcmu_dev_err(dev, "Verify failed at offset %u\n", cmp_offset);
 		ret =  TCMU_STS_MISCOMPARE;
 		tcmu_set_sense_info(sense, cmp_offset);
 	}
@@ -948,7 +951,6 @@ out:
 #define XCOPY_TARGET_DESC_LEN           32
 #define XCOPY_SEGMENT_DESC_B2B_LEN      28
 #define XCOPY_NAA_IEEE_REGEX_LEN        16
-#define XCOPY_MAX_SECTORS               1024
 
 struct xcopy {
 	struct tcmu_device *origdev;
@@ -989,11 +991,17 @@ static int xcopy_parse_segment_descs(uint8_t *seg_descs, struct xcopy *xcopy,
 		return TCMU_STS_INVALID_PARAM_LIST;
 	}
 
+	/* From spc4r36q, section 6.4.3.5 SEGMENT DESCRIPTOR LIST LENGTH field
+	 * If the number of segment descriptors exceeds the allowed number, the copy
+	 * manager shall terminate the command with CHECK CONDITION status, with the
+	 * sense key set to ILLEGAL REQUEST, and the additional sense code set to
+	 * TOO MANY SEGMENT DESCRIPTORS.
+	 */
 	if (sdll > RCR_OP_MAX_SEGMENT_DESC_COUNT * XCOPY_SEGMENT_DESC_B2B_LEN) {
 		tcmu_err("Only %u segment descriptor(s) supported, but there are %u\n",
 			 RCR_OP_MAX_SEGMENT_DESC_COUNT,
 			 sdll / XCOPY_SEGMENT_DESC_B2B_LEN);
-		return TCMU_STS_INVALID_PARAM_LIST;
+		return TCMU_STS_TOO_MANY_SEG_DESC;
 	}
 
 	/* EXTENDED COPY segment descriptor type codes block --> block */
@@ -1031,7 +1039,7 @@ static int xcopy_parse_segment_descs(uint8_t *seg_descs, struct xcopy *xcopy,
 	xcopy->lba_cnt = be16toh(*(uint16_t *)&seg_desc[10]);
 	xcopy->src_lba = be64toh(*(uint64_t *)&seg_desc[12]);
 	xcopy->dst_lba = be64toh(*(uint64_t *)&seg_desc[20]);
-	tcmu_dbg("Segment descriptor: lba_cnt: %hu src_lba: %llu dst_lba: %llu\n",
+	tcmu_dbg("Segment descriptor: lba_cnt: %u src_lba: %"PRIu64" dst_lba: %"PRIu64"\n",
 		 xcopy->lba_cnt, xcopy->src_lba, xcopy->dst_lba);
 
 	return TCMU_STS_OK;
@@ -1101,7 +1109,8 @@ static int xcopy_locate_udev(struct tcmulib_context *ctx,
 			continue;
 
 		*udev = dev;
-		tcmu_dev_dbg(dev, "Located tcmu devivce: %s\n", dev->dev_name);
+		tcmu_dev_dbg(dev, "Located tcmu devivce: %s\n",
+			     dev->tcm_dev_name);
 
 		return 0;
 	}
@@ -1203,10 +1212,16 @@ static int xcopy_parse_target_descs(struct tcmu_device *udev,
 {
 	int i, ret;
 
+	/* From spc4r36q,section 6.4.3.4 CSCD DESCRIPTOR LIST LENGTH field
+	 * If the number of CSCD descriptors exceeds the allowed number, the copy
+	 * manager shall terminate the command with CHECK CONDITION status, with
+	 * the sense key set to ILLEGAL REQUEST, and the additional sense code
+	 * set to TOO MANY TARGET DESCRIPTORS.
+	 */
 	if (tdll > RCR_OP_MAX_TARGET_DESC_COUNT * XCOPY_TARGET_DESC_LEN) {
 		tcmu_dev_err(udev, "Only %u target descriptor(s) supported, but there are %u\n",
 			     RCR_OP_MAX_TARGET_DESC_COUNT, tdll / XCOPY_TARGET_DESC_LEN);
-		return TCMU_STS_INVALID_PARAM_LIST;
+		return TCMU_STS_TOO_MANY_TGT_DESC;
 	}
 
 	for (i = 0; i < RCR_OP_MAX_TARGET_DESC_COUNT; i++) {
@@ -1303,9 +1318,11 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	 *
 	 * All target descriptors (see table 108) are 32 bytes or 64 bytes
 	 * in length
+	 * From spc4r36q, section6.4.3.4
+	 * An EXTENDED COPY command may reference one or more CSCDs.
 	 */
 	tdll = be16toh(*(uint16_t *)&par[2]);
-	if (tdll % 32 != 0) {
+	if (tdll < 32 || tdll % 32 != 0) {
 		tcmu_dev_err(dev, "Illegal target descriptor length %u\n",
 			     tdll);
 		ret = TCMU_STS_INVALID_PARAM_LIST_LEN;
@@ -1352,7 +1369,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	 * + parameter list header length
 	 */
 	if (data_length < (XCOPY_HDR_LEN + tdll + sdll + inline_dl)) {
-		tcmu_dev_err(dev, "Illegal list length: length from CDB is %u,"
+		tcmu_dev_err(dev, "Illegal list length: length from CDB is %zu,"
 			     " but here the length is %u\n",
 			     data_length, tdll + sdll + inline_dl);
 		ret = TCMU_STS_INVALID_PARAM_LIST_LEN;
@@ -1395,7 +1412,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	num_lbas = tcmu_get_dev_num_lbas(xcopy->src_dev);
 	if (xcopy->src_lba + xcopy->lba_cnt > num_lbas) {
 		tcmu_dev_err(xcopy->src_dev,
-			     "src target exceeds last lba %lld (lba %lld, copy len %lld)\n",
+			     "src target exceeds last lba %"PRIu64" (lba %"PRIu64", copy len %u\n",
 			     num_lbas, xcopy->src_lba, xcopy->lba_cnt);
 		return TCMU_STS_RANGE;
 	}
@@ -1403,7 +1420,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	num_lbas = tcmu_get_dev_num_lbas(xcopy->dst_dev);
 	if (xcopy->dst_lba + xcopy->lba_cnt > num_lbas) {
 		tcmu_dev_err(xcopy->dst_dev,
-			     "dst target exceeds last lba %lld (lba %lld, copy len %lld)\n",
+			     "dst target exceeds last lba %"PRIu64" (lba %"PRIu64", copy len %u)\n",
 			     num_lbas, xcopy->dst_lba, xcopy->lba_cnt);
 		return TCMU_STS_RANGE;
 	}
@@ -1506,7 +1523,7 @@ static int xcopy_read_work_fn(struct tcmu_device *src_dev, struct tcmulib_cmd *c
 	size_t iov_cnt = xcopy->iov_cnt;
 
 	tcmu_dev_dbg(src_dev,
-		     "Copying %llu sectors from src (lba:%llu) to dst (lba:%llu)\n",
+		     "Copying %u sectors from src (lba:%"PRIu64") to dst (lba:%"PRIu64")\n",
 		     xcopy->copy_lbas, xcopy->src_lba, xcopy->dst_lba);
 
 	iovec->iov_base = xcopy->iov_base;
@@ -1527,6 +1544,14 @@ static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	struct xcopy *xcopy;
 	int ret;
 
+	/* spc4r36q section6.4 and 6.5
+	 * EXTENDED_COPY(LID4) :service action 0x01;
+	 * EXTENDED_COPY(LID1) :service action 0x00.
+	 */
+	if ((cdb[1] & 0x1f) != 0x00) {
+		tcmu_dev_err(dev, "EXTENDED_COPY(LID4) not supported\n");
+		return TCMU_STS_INVALID_CMD;
+	}
 	/*
 	 * A parameter list length of zero specifies that copy manager
 	 * shall not transfer any data or alter any internal state.
@@ -1539,7 +1564,7 @@ static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	 * that contains the LIST IDENTIFIER field.
 	 */
 	if (data_length < XCOPY_HDR_LEN) {
-		tcmu_dev_err(dev, "Illegal parameter list: length %u < hdr_len %u\n",
+		tcmu_dev_err(dev, "Illegal parameter list: length %zu < hdr_len %u\n",
 			     data_length, XCOPY_HDR_LEN);
 		return TCMU_STS_INVALID_PARAM_LIST_LEN;
 	}
@@ -1561,11 +1586,10 @@ static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		goto finish_err;
 	}
 
-	src_max_sectors = tcmu_get_dev_max_xfer_len(xcopy->src_dev);
-	dst_max_sectors = tcmu_get_dev_max_xfer_len(xcopy->dst_dev);
+	src_max_sectors = tcmu_get_dev_opt_xcopy_rw_len(xcopy->src_dev);
+	dst_max_sectors = tcmu_get_dev_opt_xcopy_rw_len(xcopy->dst_dev);
 
 	max_sectors = min(src_max_sectors, dst_max_sectors);
-	max_sectors = min(max_sectors, (uint32_t)XCOPY_MAX_SECTORS);
 	copy_lbas = min(max_sectors, xcopy->lba_cnt);
 	xcopy->copy_lbas = copy_lbas;
 
@@ -1697,6 +1721,18 @@ static int handle_caw_check(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	uint64_t start_lba = tcmu_get_lba(cmd->cdb);
 	uint8_t sectors = cmd->cdb[13];
 
+	/* From sbc4r12a section 5.3 COMPARE AND WRITE command
+	 * If the number of logical blocks exceeds the value in the
+	 * MAXIMUM COMPARE AND WRITE LENGTH field(see 6.64 block limits VPD page)
+	 * then the device server shall terminate the command with CHECK CONDITION
+	 * status with the sense key set to ILLEGAL REQUEST and the additional sense
+	 * code set to INVALID FIELD IN CDB.
+	 */
+	if (sectors > MAX_CAW_LENGTH) {
+		tcmu_dev_err(dev, "Received caw length %u greater than max caw length %u.\n",
+			     sectors, MAX_CAW_LENGTH);
+		return TCMU_STS_INVALID_CDB;
+	}
 	/* double sectors since we have two buffers */
 	ret = check_iovec_length(dev, cmd, sectors * 2);
 	if (ret)
@@ -1715,10 +1751,23 @@ static int handle_caw(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	struct tcmulib_cmd *readcmd;
 	size_t half = (tcmu_iovec_length(cmd->iovec, cmd->iov_cnt)) / 2;
 	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
+	uint8_t sectors = cmd->cdb[13];
 
-        ret = handle_caw_check(dev, cmd);
-        if (ret)
-                return ret;
+	/* From sbc4r12a section 5.3 COMPARE AND WRITE command
+	 * A NUMBER OF LOGICAL BLOCKS field set to zero specifies that no
+	 * read operations shall be performed, no logical block data shall
+	 * be transferred from the Data-Out Buffer, no compare operations
+	 * shall be performed, and no write operations shall be performed.
+	 * This condition shall not be considered an error.
+	 */
+	if (!sectors) {
+		tcmu_dev_dbg(dev, "NUMBER OF LOGICAL BLOCKS is zero, just return ok.\n");
+		return TCMU_STS_OK;
+	}
+
+	ret = handle_caw_check(dev, cmd);
+	if (ret)
+		return ret;
 
 	readcmd = caw_init_readcmd(cmd, half);
 	if (!readcmd) {
@@ -1742,32 +1791,45 @@ out:
 
 static int tcmur_caw_fn(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
-        tcmur_caw_fn_t caw_fn = cmd->cmdstate;
-        uint32_t block_size = tcmu_get_dev_block_size(dev);
-        uint8_t *cdb = cmd->cdb;
-        uint64_t off = block_size * tcmu_get_lba(cdb);
-        size_t half = (tcmu_iovec_length(cmd->iovec, cmd->iov_cnt)) / 2;
+	tcmur_caw_fn_t caw_fn = cmd->cmdstate;
+	uint32_t block_size = tcmu_get_dev_block_size(dev);
+	uint8_t *cdb = cmd->cdb;
+	uint64_t off = block_size * tcmu_get_lba(cdb);
+	size_t half = (tcmu_iovec_length(cmd->iovec, cmd->iov_cnt)) / 2;
 
-        cmd->done = handle_generic_cbk;
-        return caw_fn(dev, cmd, off, half, cmd->iovec, cmd->iov_cnt);
+	cmd->done = handle_generic_cbk;
+	return caw_fn(dev, cmd, off, half, cmd->iovec, cmd->iov_cnt);
 }
 
 int tcmur_handle_caw(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 		     tcmur_caw_fn_t caw_fn)
 {
-        int ret;
+	int ret;
+	uint8_t sectors = cmd->cdb[13];
 
-        ret = alua_check_state(dev, cmd);
-        if (ret)
-                return ret;
+	/* From sbc4r12a section 5.3 COMPARE AND WRITE command
+	 * A NUMBER OF LOGICAL BLOCKS field set to zero specifies that no
+	 * read operations shall be performed, no logical block data shall
+	 * be transferred from the Data-Out Buffer, no compare operations
+	 * shall be performed, and no write operations shall be performed.
+	 * This condition shall not be considered an error.
+	 */
+	if (!sectors) {
+		tcmu_dev_dbg(dev, "NUMBER OF LOGICAL BLOCKS is zero, just return ok.\n");
+		return TCMU_STS_OK;
+	}
 
-        ret = handle_caw_check(dev, cmd);
-        if (ret)
-                return ret;
+	ret = alua_check_state(dev, cmd);
+	if (ret)
+		return ret;
 
-        cmd->cmdstate = caw_fn;
+	ret = handle_caw_check(dev, cmd);
+	if (ret)
+		return ret;
 
-        return async_handle_cmd(dev, cmd, tcmur_caw_fn);
+	cmd->cmdstate = caw_fn;
+
+	return async_handle_cmd(dev, cmd, tcmur_caw_fn);
 }
 
 /* async flush */
@@ -1961,7 +2023,7 @@ static void handle_format_unit_cbk(struct tcmu_device *dev,
 	/* Check for last commmand */
 	if (state->done_blocks == dev->num_lbas) {
 		tcmu_dev_dbg(dev,
-			     "last format cmd, done_blocks:%lu num_lbas:%lu block_size:%lu\n",
+			     "last format cmd, done_blocks:%u num_lbas:%"PRIu64" block_size:%u\n",
 			     state->done_blocks, dev->num_lbas, dev->block_size);
 		goto free_iovec;
 	}
@@ -1984,7 +2046,7 @@ static void handle_format_unit_cbk(struct tcmu_device *dev,
 		writecmd->done = handle_format_unit_cbk;
 
 		tcmu_dev_dbg(dev,
-			     "next format cmd, done_blocks:%lu num_lbas:%lu block_size:%lu\n",
+			     "next format cmd, done_blocks:%u num_lbas:%"PRIu64" block_size:%u\n",
 			     state->done_blocks, dev->num_lbas, dev->block_size);
 
 		rc = async_handle_cmd(dev, writecmd, format_unit_work_fn);
@@ -2053,7 +2115,7 @@ static int handle_format_unit(struct tcmu_device *dev, struct tcmulib_cmd *cmd) 
 		goto free_state;
 	}
 
-	tcmu_dev_dbg(dev, "start emulate format, done_blocks:%lu num_lbas:%lu block_size:%lu\n",
+	tcmu_dev_dbg(dev, "start emulate format, done_blocks:%u num_lbas:%"PRIu64" block_size:%u\n",
 		     state->done_blocks, num_lbas, block_size);
 
 	/* copy incase handler changes it */
@@ -2267,6 +2329,8 @@ static int handle_inquiry(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	port = tcmu_get_enabled_port(&group_list);
 	if (!port) {
 		tcmu_dev_dbg(dev, "no enabled ports found. Skipping ALUA support\n");
+	} else {
+		tcmu_update_dev_lock_state(dev);
 	}
 
 	ret = tcmu_emulate_inquiry(dev, port, cmd->cdb, cmd->iovec,

@@ -1,17 +1,9 @@
 /*
- * Copyright 2017, Red Hat, Inc.
+ * Copyright (c) 2017 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
  */
 
 #define _GNU_SOURCE
@@ -243,7 +235,7 @@ static void *tgt_port_grp_recovery_thread_fn(void *arg)
 
 	if (ret < 0) {
 		tcmu_err("Could not disable %s/%s/tpgt_%hu (err %d).\n",
-			 ret, tpg->fabric, tpg->wwn, tpg->tpgt);
+			 tpg->fabric, tpg->wwn, tpg->tpgt, ret);
 		/* just recover the devs and leave the tpg in curr state */
 		goto done;
 	}
@@ -258,6 +250,7 @@ done:
 	 * cmdproc thread to reopen all these in parallel.
 	 */
 	list_for_each_safe(&tpg->devs, rdev, tmp_rdev, recovery_entry) {
+		list_del(&rdev->recovery_entry);
 		ret = __tcmu_reopen_dev(rdev->dev, false, -1);
 		if (ret) {
 			tcmu_dev_err(rdev->dev, "Could not reinitialize device. (err %d).\n",
@@ -272,7 +265,7 @@ done:
 		ret = tcmu_set_tpg_int(tpg, "enable", 1);
 		if (ret) {
 			tcmu_err("Could not enable %s/%s/tpgt_%hu (err %d).\n",
-				 ret, tpg->fabric, tpg->wwn, tpg->tpgt);
+				 tpg->fabric, tpg->wwn, tpg->tpgt, ret);
 		} else {
 			tcmu_info("Enabled %s/%s/tpgt_%hu.\n", tpg->fabric, tpg->wwn,
 				  tpg->tpgt);
@@ -280,7 +273,7 @@ done:
 	}
 
 	free_tgt_port_grp(tpg);
-        return NULL;
+	return NULL;
 }
 
 int tcmu_add_dev_to_recovery_list(struct tcmu_device *dev)

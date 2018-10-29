@@ -1,18 +1,10 @@
 /*
- * Copyright 2014, Red Hat, Inc.
+ * Copyright (c) 2014 Red Hat, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
-*/
+ * This file is licensed to you under your choice of the GNU Lesser
+ * General Public License, version 2.1 or any later version (LGPLv2.1 or
+ * later), or the Apache License 2.0.
+ */
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -192,7 +184,7 @@ size_t tcmu_iovec_length(struct iovec *iovec, size_t iov_cnt)
 
 void __tcmu_set_sense_data(uint8_t *sense_buf, uint8_t key, uint16_t asc_ascq)
 {
-	sense_buf[0] = 0x70;	/* fixed, current */
+	sense_buf[0] |= 0x70;	/* fixed, current */
 	sense_buf[2] = key;
 	sense_buf[7] = 0xa;
 	sense_buf[12] = (asc_ascq >> 8) & 0xff;
@@ -201,7 +193,7 @@ void __tcmu_set_sense_data(uint8_t *sense_buf, uint8_t key, uint16_t asc_ascq)
 
 int tcmu_set_sense_data(uint8_t *sense_buf, uint8_t key, uint16_t asc_ascq)
 {
-	memset(sense_buf, 0, 18);
+	memset(sense_buf, 0, SENSE_BUFFERSIZE);
 	__tcmu_set_sense_data(sense_buf, key, asc_ascq);
 	return TCMU_STS_PASSTHROUGH_ERR;
 }
@@ -588,7 +580,6 @@ finish_page83:
 	{
 		char data[64];
 		uint32_t max_xfer_length;
-		uint32_t opt_unmap_gran;
 		uint32_t unmap_gran_align;
 		uint16_t val16;
 		uint32_t val32;
@@ -618,7 +609,7 @@ finish_page83:
 		 *
 		 * It should be less than or equal to MAXIMUM TRANSFER LENGTH.
 		 */
-		data[5] = 0x01;
+		data[5] = MAX_CAW_LENGTH;
 
 		/*
 		 * Daemons like runner may override the user requested
@@ -634,7 +625,7 @@ finish_page83:
 
 		if (rhandler->unmap) {
 			/* MAXIMUM UNMAP LBA COUNT */
-			val32 = htobe32(VPD_MAX_UNMAP_LBA_COUNT);
+			val32 = htobe32(tcmu_get_dev_max_unmap_len(dev));
 			memcpy(&data[20], &val32, 4);
 
 			/* MAXIMUM UNMAP BLOCK DESCRIPTOR COUNT */
@@ -642,8 +633,7 @@ finish_page83:
 			memcpy(&data[24], &val32, 4);
 
 			/* OPTIMAL UNMAP GRANULARITY */
-			opt_unmap_gran = tcmu_get_dev_opt_unmap_gran(dev);
-			val32 = htobe32(opt_unmap_gran);
+			val32 = htobe32(tcmu_get_dev_opt_unmap_gran(dev));
 			memcpy(&data[28], &val32, 4);
 
 			/* UNMAP GRANULARITY ALIGNMENT */
@@ -1169,7 +1159,9 @@ int tcmu_emulate_start_stop(struct tcmu_device *dev, uint8_t *cdb)
 #define CDB_TO_BUF_SIZE(bytes) ((bytes) * 3 + 1)
 #define CDB_FIX_BYTES 64 /* 64 bytes for default */
 #define CDB_FIX_SIZE CDB_TO_BUF_SIZE(CDB_FIX_BYTES)
-void tcmu_cdb_debug_info(struct tcmu_device *dev, const struct tcmulib_cmd *cmd)
+void tcmu_print_cdb_info(struct tcmu_device *dev,
+			 const struct tcmulib_cmd *cmd,
+			 const char *info)
 {
 	int i, n, bytes;
 	char fix[CDB_FIX_SIZE], *buf;
@@ -1191,10 +1183,40 @@ void tcmu_cdb_debug_info(struct tcmu_device *dev, const struct tcmulib_cmd *cmd)
 	for (i = 0, n = 0; i < bytes; i++) {
 		n += sprintf(buf + n, "%x ", cmd->cdb[i]);
 	}
+
+	if (info)
+		n += sprintf(buf + n, "%s", info);
+
 	sprintf(buf + n, "\n");
 
-	tcmu_dev_dbg_scsi_cmd(dev, buf);
+	if (info) {
+		tcmu_dev_warn(dev, "%s", buf);
+	} else {
+		tcmu_dev_dbg_scsi_cmd(dev, "%s", buf);
+	}
 
 	if (bytes > CDB_FIX_SIZE)
 		free(buf);
 }
+
+void tcmu_cancel_thread(pthread_t thread)
+{
+	void *join_retval;
+	int ret;
+
+	ret = pthread_cancel(thread);
+	if (ret) {
+		tcmu_err("pthread_cancel failed with value %d\n", ret);
+		return;
+	}
+
+	ret = pthread_join(thread, &join_retval);
+	if (ret) {
+		tcmu_err("pthread_join failed with value %d\n", ret);
+		return;
+	}
+
+	if (join_retval != PTHREAD_CANCELED)
+		tcmu_err("unexpected join retval: %p\n", join_retval);
+}
+
