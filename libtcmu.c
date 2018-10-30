@@ -1222,12 +1222,10 @@ void tcmulib_processing_complete(struct tcmu_device *dev)
 			 dev->dev_name, errno);
 }
 
-struct tcmulib_cmd *tcmu_seek_cmd(struct tcmu_device *dev)
+struct tcmulib_cmd *tcmu_peek_cmd(struct tcmu_device *dev)
 {
 	struct tcmu_mailbox *mb = dev->map;
 	struct tcmu_cmd_entry *ent;
-
-//	ent = device_cmd_tail(dev);
 
 	while ((ent = device_cmd_tail(dev)) != device_cmd_head(dev)) {
 		if (tcmu_hdr_get_op(ent->hdr.len_op) == TCMU_OP_CMD) {
@@ -1272,4 +1270,9 @@ uint32_t tcmu_get_cmd_tail(struct tcmu_device *dev)
 void tcmu_set_cmd_tail(struct tcmu_device *dev, uint32_t cmd_tail)
 {
 	dev->cmd_tail = cmd_tail;
+}
+
+char *tcmu_get_dev_name(struct tcmu_device *dev)
+{
+	return dev->tcm_dev_name;
 }

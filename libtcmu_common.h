@@ -153,9 +153,10 @@ struct tcmur_handler *tcmu_get_runner_handler(struct tcmu_device *dev);
 void tcmu_block_device(struct tcmu_device *dev);
 void tcmu_unblock_device(struct tcmu_device *dev);
 void tcmu_flush_device(struct tcmu_device *dev);
-struct tcmulib_cmd *tcmu_seek_cmd(struct tcmu_device *dev);
+struct tcmulib_cmd *tcmu_peek_cmd(struct tcmu_device *dev);
 uint32_t tcmu_get_cmd_tail(struct tcmu_device *dev);
 void tcmu_set_cmd_tail(struct tcmu_device *dev, uint32_t cmd_tail);
+char *tcmu_get_dev_name(struct tcmu_device *dev);
 
 /* Helper routines for processing commands */
 char *tcmu_get_cfgfs_str(const char *path);
