@@ -230,8 +230,6 @@ static void handle_unmap_cbk(struct tcmu_device *dev, struct tcmulib_cmd *ucmd,
 	bool error;
 	int status;
 
-	free(desc);
-
 	pthread_mutex_lock(&state->lock);
 	error = state->error;
 	/*
@@ -242,8 +240,6 @@ static void handle_unmap_cbk(struct tcmu_device *dev, struct tcmulib_cmd *ucmd,
 		state->status = ret;
 	}
 
-	free(ucmd);
-
 	if (--state->refcount > 0) {
 		pthread_mutex_unlock(&state->lock);
 		return;
@@ -253,6 +249,8 @@ static void handle_unmap_cbk(struct tcmu_device *dev, struct tcmulib_cmd *ucmd,
 	pthread_mutex_unlock(&state->lock);
 
 	unmap_state_free(state);
+	free(ucmd);
+	free(desc);
 
 	aio_command_finish(dev, origcmd, error ? status : ret);
 }
@@ -346,16 +344,18 @@ static int align_and_split_unmap(struct tcmu_device *dev,
 			tcmu_dev_dbg(dev, "There are totally %d splits\n", j);
 		}
 
+		state->refcount++;
+
 		ret = async_handle_cmd(dev, ucmd, unmap_work_fn);
-		if (ret != TCMU_STS_ASYNC_HANDLED)
+		if (ret != TCMU_STS_ASYNC_HANDLED) {
+			state->refcount--;
 			goto free_ucmd;
+		}
 
 		nlbas -= lbas;
 		lba += lbas;
 
 		lbas = min(opt_unmap_gran, nlbas);
-
-		state->refcount++;
 	}
 
 	return ret;
@@ -409,6 +409,7 @@ static int handle_unmap_internal(struct tcmu_device *dev, struct tcmulib_cmd *or
 		offset += 16;
 		bddl -= 16;
 	}
+
 state_unlock:
 	/*
 	 * If all calls are successful and nlbas > 0 for all bddls, the
@@ -422,9 +423,10 @@ state_unlock:
 		state->error = true;
 
 	refcount = state->refcount;
+
 	pthread_mutex_unlock(&state->lock);
 
-	if (refcount)
+	if (refcount > 0)
 		/*
 		 * Some unmaps have been dispatched, so the cbk will handle
 		 * releasing of resources and returning the error.
@@ -537,8 +539,11 @@ static int handle_unmap(struct tcmu_device *dev, struct tcmulib_cmd *origcmd)
 	}
 
 	state = unmap_state_alloc(dev, origcmd, &ret);
-	if (!state)
+	if (!state) {
+		tcmu_dev_dbg(dev,"unmap no resources to allocate struct\n");
+		ret = TCMU_STS_NO_RESOURCE;
 		goto out_free_par;
+	}
 
 	ret = handle_unmap_internal(dev, origcmd, bddl, par);
 
