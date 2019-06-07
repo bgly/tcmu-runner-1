@@ -21,6 +21,7 @@
 #include "libtcmu_config.h"
 #include "libtcmu_time.h"
 #include "libtcmu_priv.h"
+#include "libtcmu.h"
 #include "string_priv.h"
 
 /* tcmu ring buffer for log */
@@ -67,6 +68,8 @@ static pthread_mutex_t tcmu_log_dir_lock = PTHREAD_MUTEX_INITIALIZER;
 static inline int to_syslog_level(int level)
 {
 	switch (level) {
+	case TCMU_CONF_LOG_CRIT:
+		return TCMU_LOG_CRIT;
 	case TCMU_CONF_LOG_ERROR:
 		return TCMU_LOG_ERROR;
 	case TCMU_CONF_LOG_WARN:
@@ -90,12 +93,17 @@ unsigned int tcmu_get_log_level(void)
 
 void tcmu_set_log_level(int level)
 {
+	if (tcmu_log_level == to_syslog_level(level)) {
+		tcmu_dbg("No changes to current log_level: %s, skipping it.\n",
+		         log_level_lookup[level]);
+		return;
+	}
 	if (level > TCMU_CONF_LOG_LEVEL_MAX)
 		level = TCMU_CONF_LOG_LEVEL_MAX;
 	else if (level < TCMU_CONF_LOG_LEVEL_MIN)
 		level = TCMU_CONF_LOG_LEVEL_MIN;
 
-	tcmu_info("log level now is %s\n", log_level_lookup[level]);
+	tcmu_crit("log level now is %s\n", log_level_lookup[level]);
 	tcmu_log_level = to_syslog_level(level);
 }
 
@@ -213,7 +221,7 @@ log_internal(int pri, struct tcmu_device *dev, const char *funcname,
 {
 	char buf[LOG_MSG_LEN];
 	int n;
-	struct tcmur_handler *rhandler;
+	struct tcmulib_handler *handler;
 
 	if (pri > tcmu_log_level)
 		return;
@@ -229,9 +237,9 @@ log_internal(int pri, struct tcmu_device *dev, const char *funcname,
 
 	/* Format the log msg */
 	if (dev) {
-		rhandler = tcmu_get_runner_handler(dev);
+		handler = tcmu_dev_get_handler(dev);
 		n = sprintf(buf, "%s:%d %s/%s: ", funcname, linenr,
-		            rhandler ? rhandler->subtype: "",
+		            handler ? handler->subtype: "",
 		            dev ? dev->tcm_dev_name: "");
 	} else {
 		n = sprintf(buf, "%s:%d: ", funcname, linenr);
@@ -252,6 +260,16 @@ log_internal(int pri, struct tcmu_device *dev, const char *funcname,
 
 	pthread_mutex_unlock(&tcmu_logbuf->file_out_lock);
 	pthread_cleanup_pop(0);
+}
+
+void tcmu_crit_message(struct tcmu_device *dev, const char *funcname,
+		       int linenr, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	log_internal(TCMU_LOG_CRIT, dev, funcname, linenr, fmt, args);
+	va_end(args);
 }
 
 void tcmu_err_message(struct tcmu_device *dev, const char *funcname,
@@ -360,6 +378,8 @@ static int create_syslog_output(struct log_buf *logbuf, int pri,
 static const char *loglevel_string(int priority)
 {
 	switch (priority) {
+	case TCMU_LOG_CRIT:
+		return "CRIT";
 	case TCMU_LOG_ERROR:
 		return "ERROR";
 	case TCMU_LOG_WARN:
@@ -381,7 +401,7 @@ static int output_to_fd(int pri, const char *timestamp,
 	char *buf, *msg;
 	int count, ret, written = 0, r, pid = 0;
 
-	if (fd < 0)
+	if (fd == -1)
 		return -1;
 
 	pid = getpid();
@@ -434,7 +454,7 @@ static int create_file_output(struct log_buf *logbuf, int pri,
 	tcmu_dbg("Attempting to use '%s' as the log file path\n", log_file_path);
 
 	fd = open(log_file_path, O_CREAT | O_APPEND | O_WRONLY, S_IRUSR | S_IWUSR);
-	if (fd < 0) {
+	if (fd == -1) {
 		tcmu_err("Failed to open %s:%m\n", log_file_path);
 		return fd;
 	}
@@ -458,7 +478,7 @@ static int create_file_output(struct log_buf *logbuf, int pri,
 	pthread_mutex_unlock(&logbuf->file_out_lock);
 	pthread_cleanup_pop(0);
 
-	tcmu_info("log file path now is '%s'\n", log_file_path);
+	tcmu_crit("log file path now is '%s'\n", log_file_path);
 	return 0;
 }
 
@@ -515,6 +535,9 @@ static void *log_thread_start(void *arg)
 
 static bool tcmu_log_dir_check(const char *path)
 {
+	if (!path)
+		return false;
+
 	if (strlen(path) >= PATH_MAX - TCMU_LOG_FILENAME_MAX) {
 		tcmu_err("--tcmu-log-dir='%s' cannot exceed %d characters\n",
 			 path, PATH_MAX - TCMU_LOG_FILENAME_MAX - 1);
@@ -637,13 +660,6 @@ int tcmu_setup_log(char *log_dir)
 	struct log_buf *logbuf;
 	int ret;
 
-	if (!log_dir)
-		log_dir = getenv("TCMU_LOGDIR");
-	if (!log_dir)
-		log_dir = tcmu_log_dir;
-	if (!log_dir)
-		log_dir = TCMU_LOG_DIR_DEFAULT;
-
 	ret = tcmu_log_dir_create(log_dir);
 	if (ret) {
 		tcmu_err("Could not setup log dir %s. Error %d.\n", log_dir,
@@ -685,9 +701,31 @@ free_log_dir:
 	return -ENOMEM;
 }
 
-int tcmu_resetup_log_file(char *log_dir)
+static bool is_same_path(const char* path1, const char* path2)
 {
+	struct stat st1 = {0,};
+	struct stat st2 = {0,};
+
+	if (!path1 || !path2)
+		return false;
+
+	if (stat(path1, &st1) == -1 || stat(path2, &st2) == -1) {
+		return false;
+	}
+
+	return st1.st_dev == st2.st_dev && st1.st_ino == st2.st_ino;
+}
+
+int tcmu_resetup_log_file(struct tcmu_config *cfg, char *log_dir)
+{
+	struct tcmulib_handler *handler;
 	int ret;
+
+	if (is_same_path(tcmu_log_dir, log_dir)) {
+		tcmu_dbg("No changes to current log_dir: %s, skipping it.\n",
+		         log_dir);
+		return 0;
+	}
 
 	if (log_dir) {
 		ret = tcmu_log_dir_create(log_dir);
@@ -704,10 +742,25 @@ int tcmu_resetup_log_file(char *log_dir)
 
 	ret = create_file_output(tcmu_logbuf, TCMU_LOG_DEBUG_SCSI_CMD,
 				 TCMU_LOG_FILENAME);
-	if (ret < 0)
+	if (ret < 0) {
 		tcmu_err("Could not change log path to %s, ret:%d.\n",
-			 log_dir, ret);
-	return ret;
+				log_dir, ret);
+		return ret;
+	}
+
+	if (!cfg || !cfg->ctx)
+		return 0;
+
+	darray_foreach(handler, cfg->ctx->handlers) {
+		if (!handler->update_logdir)
+			continue;
+
+		if (!handler->update_logdir())
+			tcmu_err("Failed to update logdir for handler (%s)\n",
+				 handler->name);
+	}
+
+	return 0;
 }
 
 void tcmu_destroy_log()

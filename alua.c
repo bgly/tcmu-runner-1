@@ -23,6 +23,7 @@
 #include "libtcmu_log.h"
 #include "libtcmu_common.h"
 #include "libtcmu_priv.h"
+#include "tcmu-runner.h"
 #include "tcmur_device.h"
 #include "target.h"
 #include "alua.h"
@@ -35,7 +36,7 @@ static char *tcmu_get_alua_str_setting(struct alua_grp *group,
 	snprintf(path, sizeof(path), CFGFS_CORE"/%s/%s/alua/%s/%s",
 		 group->dev->tcm_hba_name, group->dev->tcm_dev_name,
 		 group->name, setting);
-	return tcmu_get_cfgfs_str(path);
+	return tcmu_cfgfs_get_str(path);
 }
 
 static int tcmu_get_alua_int_setting(struct alua_grp *group,
@@ -46,7 +47,7 @@ static int tcmu_get_alua_int_setting(struct alua_grp *group,
 	snprintf(path, sizeof(path), CFGFS_CORE"/%s/%s/alua/%s/%s",
 		 group->dev->tcm_hba_name, group->dev->tcm_dev_name,
 		 group->name, setting);
-	return tcmu_get_cfgfs_int(path);
+	return tcmu_cfgfs_get_int(path);
 }
 
 static int tcmu_set_alua_int_setting(struct alua_grp *group,
@@ -57,7 +58,7 @@ static int tcmu_set_alua_int_setting(struct alua_grp *group,
 	snprintf(path, sizeof(path), CFGFS_CORE"/%s/%s/alua/%s/%s",
 		 group->dev->tcm_hba_name, group->dev->tcm_dev_name,
 		 group->name, setting);
-	return tcmu_set_cfgfs_ul(path, val);
+	return tcmu_cfgfs_set_u32(path, val);
 }
 
 static void tcmu_release_tgt_ports(struct alua_grp *group)
@@ -82,7 +83,7 @@ static void tcmu_free_alua_grp(struct alua_grp *group)
 static struct alua_grp *
 tcmu_get_alua_grp(struct tcmu_device *dev, const char *name)
 {
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	struct alua_grp *group;
 	struct tgt_port *port;
 	char *str_val, *orig_str_val, *member;
@@ -197,11 +198,11 @@ tcmu_get_alua_grp(struct tcmu_device *dev, const char *name)
 		 * can manually change states, so report this as
 		 * implicit.
 		 */
-		rdev->failover_type = TMCUR_DEV_FAILOVER_ALL_ACTIVE;
+		rdev->failover_type = TCMUR_DEV_FAILOVER_ALL_ACTIVE;
 
 		group->tpgs = TPGS_ALUA_IMPLICIT;
 	} else if (!strcmp(str_val, "Implicit")) {
-		rdev->failover_type = TMCUR_DEV_FAILOVER_IMPLICIT;
+		rdev->failover_type = TCMUR_DEV_FAILOVER_IMPLICIT;
 
 		group->tpgs = TPGS_ALUA_IMPLICIT;
 	} else if (!strcmp(str_val, "Explicit")) {
@@ -218,13 +219,9 @@ tcmu_get_alua_grp(struct tcmu_device *dev, const char *name)
 		 * We only need implicit enabled in the kernel so we can
 		 * interact with the alua configfs interface.
 		 */
-		rdev->failover_type = TMCUR_DEV_FAILOVER_EXPLICIT;
+		rdev->failover_type = TCMUR_DEV_FAILOVER_EXPLICIT;
 
 		group->tpgs = TPGS_ALUA_EXPLICIT;
-
-		tcmu_dev_warn(dev, "Unsupported alua_access_type: Implicit and Explicit failover not supported.\n");
-
-		goto free_str_val;
 	} else {
 		tcmu_dev_err(dev, "Invalid ALUA type %s", str_val);
 		goto free_str_val;
@@ -396,19 +393,19 @@ static int alua_sync_state(struct tcmu_device *dev,
 			   struct list_head *group_list,
 			   uint16_t enabled_group_id)
 {
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
 	struct alua_grp *group;
 	uint16_t ao_group_id;
 	uint8_t alua_state;
 	int ret;
 
-	if (rdev->failover_type == TMCUR_DEV_FAILOVER_IMPLICIT) {
+	if (rdev->failover_type == TCMUR_DEV_FAILOVER_IMPLICIT) {
 		tcmu_update_dev_lock_state(dev);
 		return TCMU_STS_OK;
 	}
 
-	if (rdev->failover_type != TMCUR_DEV_FAILOVER_EXPLICIT ||
+	if (rdev->failover_type != TCMUR_DEV_FAILOVER_EXPLICIT ||
 	    !rhandler->get_lock_tag)
 		return TCMU_STS_OK;
 
@@ -458,7 +455,7 @@ int tcmu_emulate_report_tgt_port_grps(struct tcmu_device *dev,
 	struct tgt_port *port, *enabled_port;
 	int ext_hdr = cmd->cdb[1] & 0x20;
 	uint32_t off = 4, ret_data_len = 0, ret32;
-	uint32_t alloc_len = tcmu_get_xfer_length(cmd->cdb);
+	uint32_t alloc_len = tcmu_cdb_get_xfer_length(cmd->cdb);
 	uint8_t *buf;
 	int ret;
 
@@ -544,13 +541,13 @@ bool lock_is_required(struct tcmu_device *dev)
 static void *alua_lock_thread_fn(void *arg)
 {
 	/* TODO: set UA based on bgly's patches */
-	tcmu_acquire_dev_lock(arg, false, -1);
+	tcmu_acquire_dev_lock(arg, -1);
 	return NULL;
 }
 
 int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	pthread_attr_t attr;
 	int ret = TCMU_STS_OK;
 
@@ -626,7 +623,7 @@ static bool alua_check_sup_state(uint8_t state, uint8_t sup)
 
 static int tcmu_explicit_transition(struct list_head *group_list,
 				    struct alua_grp *group, uint8_t new_state,
-				    uint8_t alua_status, uint8_t *sense)
+				    uint8_t alua_status)
 {
 	struct tcmu_device *dev = group->dev;
 	struct alua_grp *tmp_group;
@@ -644,7 +641,7 @@ static int tcmu_explicit_transition(struct list_head *group_list,
 			/* just change local state */
 			break;
 
-		ret = tcmu_acquire_dev_lock(dev, true, group->id);
+		ret = tcmu_acquire_dev_lock(dev, group->id);
 		if (ret == TCMU_STS_HW_ERR) {
 			return TCMU_STS_EXPL_TRANSITION_ERR;
 		} else if (ret) {
@@ -693,7 +690,7 @@ int tcmu_emulate_set_tgt_port_grps(struct tcmu_device *dev,
 {
 	struct alua_grp *group;
 	struct tgt_port *port;
-	uint32_t off = 4, param_list_len = tcmu_get_xfer_length(cmd->cdb);
+	uint32_t off = 4, param_list_len = tcmu_cdb_get_xfer_length(cmd->cdb);
 	uint16_t id, tmp_id;
 	char *buf, new_state;
 	int found, ret = TCMU_STS_OK;
@@ -738,8 +735,7 @@ int tcmu_emulate_set_tgt_port_grps(struct tcmu_device *dev,
 			tcmu_dev_dbg(dev, "Got STPG for group %u\n", id);
 			ret = tcmu_explicit_transition(group_list, group,
 					new_state,
-					ALUA_STAT_ALTERED_BY_EXPLICIT_STPG,
-					cmd->sense_buf);
+					ALUA_STAT_ALTERED_BY_EXPLICIT_STPG);
 			if (ret != TCMU_STS_OK) {
 				tcmu_dev_err(dev, "Failing STPG for group %d\n",
 					      id);
@@ -768,14 +764,14 @@ free_buf:
 
 int alua_check_state(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 
-	if (rdev->failover_type == TMCUR_DEV_FAILOVER_EXPLICIT) {
+	if (rdev->failover_type == TCMUR_DEV_FAILOVER_EXPLICIT) {
 		if (rdev->lock_state != TCMUR_DEV_LOCK_LOCKED) {
 			tcmu_dev_dbg(dev, "device lock not held.\n");
 			return TCMU_STS_FENCED;
 		}
-	} else if (rdev->failover_type == TMCUR_DEV_FAILOVER_IMPLICIT) {
+	} else if (rdev->failover_type == TCMUR_DEV_FAILOVER_IMPLICIT) {
 		return alua_implicit_transition(dev, cmd);
 	}
 

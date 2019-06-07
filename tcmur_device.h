@@ -26,9 +26,9 @@
 #define TCMUR_UA_DEV_SIZE_CHANGED	0
 
 enum {
-	TMCUR_DEV_FAILOVER_ALL_ACTIVE,
-	TMCUR_DEV_FAILOVER_IMPLICIT,
-	TMCUR_DEV_FAILOVER_EXPLICIT,
+	TCMUR_DEV_FAILOVER_ALL_ACTIVE,
+	TCMUR_DEV_FAILOVER_IMPLICIT,
+	TCMUR_DEV_FAILOVER_EXPLICIT,
 };
 
 enum {
@@ -40,6 +40,7 @@ enum {
 
 struct tcmur_device {
 	struct tcmu_device *dev;
+	void *hm_private;
 
 	pthread_t cmdproc_thread;
 
@@ -81,12 +82,15 @@ int tcmu_cancel_lock_thread(struct tcmu_device *dev);
 void tcmu_notify_conn_lost(struct tcmu_device *dev);
 void tcmu_notify_lock_lost(struct tcmu_device *dev);
 
-int __tcmu_reopen_dev(struct tcmu_device *dev, bool in_lock_thread, int retries);
-int tcmu_reopen_dev(struct tcmu_device *dev, bool in_lock_thread, int retries);
+int __tcmu_reopen_dev(struct tcmu_device *dev, int retries);
+int tcmu_reopen_dev(struct tcmu_device *dev, int retries);
 
-int tcmu_acquire_dev_lock(struct tcmu_device *dev, bool is_sync, uint16_t tag);
+int tcmu_acquire_dev_lock(struct tcmu_device *dev, uint16_t tag);
 void tcmu_release_dev_lock(struct tcmu_device *dev);
 int tcmu_get_lock_tag(struct tcmu_device *dev, uint16_t *tag);
 void tcmu_update_dev_lock_state(struct tcmu_device *dev);
+
+void tcmur_dev_set_private(struct tcmu_device *dev, void *private);
+void *tcmur_dev_get_private(struct tcmu_device *dev);
 
 #endif

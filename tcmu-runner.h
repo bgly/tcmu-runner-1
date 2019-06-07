@@ -25,6 +25,7 @@ extern "C" {
 #include "libtcmu_log.h"
 #include "libtcmu_common.h"
 #include "alua.h"
+#include "scsi.h"
 
 typedef int (*rw_fn_t)(struct tcmu_device *, struct tcmulib_cmd *,
 		       struct iovec *, size_t, size_t, off_t);
@@ -139,6 +140,11 @@ struct tcmur_handler {
 	 * latter case opaque will point to a struct dbus_info.
 	 */
 	bool _is_dbus_handler;
+
+	/*
+	 * Update the logdir called by dynamic config thread.
+	 */
+	bool (*update_logdir)(void);
 };
 
 /*
@@ -153,11 +159,6 @@ struct tcmur_handler {
  */
 int tcmur_register_handler(struct tcmur_handler *handler);
 bool tcmur_unregister_handler(struct tcmur_handler *handler);
-
-/*
- * Misc
- */
-void tcmu_cancel_thread(pthread_t thread);
 
 #ifdef __cplusplus
 }
